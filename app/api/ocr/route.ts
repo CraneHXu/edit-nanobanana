@@ -1,12 +1,25 @@
 /**
  * OCR API Route - Calls PaddleOCR API
- * This runs as a Vercel Edge/Serverless function
+ * Runs as Vercel Edge Function for faster cold starts
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 
+// Use Edge Runtime for faster cold starts and global deployment
+export const runtime = 'edge';
+
 const OCR_API_URL = process.env.OCR_API_URL || 'https://ddq659q3sbt2h5h6.aistudio-app.com/ocr';
 const OCR_API_TOKEN = process.env.OCR_API_TOKEN;
+
+// Helper function to convert ArrayBuffer to base64 (Edge-compatible, no Buffer)
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
 
 // PaddleOCR response can have various formats
 interface PaddleOCRResult {
@@ -42,9 +55,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Convert file to base64
+    // Convert file to base64 (Edge-compatible)
     const arrayBuffer = await imageFile.arrayBuffer();
-    const base64Data = Buffer.from(arrayBuffer).toString('base64');
+    const base64Data = arrayBufferToBase64(arrayBuffer);
 
     // Determine file type (0 for PDF, 1 for image)
     const isPdf = imageFile.type === 'application/pdf';
