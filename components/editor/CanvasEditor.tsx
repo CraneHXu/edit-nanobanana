@@ -576,17 +576,6 @@ export function CanvasEditor() {
     };
   }, [viewportZoom, setViewportZoom]);
 
-  if (isDetecting) {
-    return (
-      <div className="flex items-center justify-center w-full h-[600px] bg-gray-100 rounded-lg">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
-          <p className="text-gray-600">Detecting text...</p>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div
       ref={containerRef}
@@ -617,6 +606,14 @@ export function CanvasEditor() {
       {isComparing && (
         <div className="absolute top-2 left-2 bg-black/70 text-white px-3 py-1 rounded text-sm z-10">
           Comparing with original
+        </div>
+      )}
+      {isDetecting && (
+        <div className="absolute inset-0 bg-black/40 flex items-center justify-center z-20 rounded-lg">
+          <div className="text-center bg-white/90 rounded-lg p-6 shadow-lg">
+            <div className="animate-spin rounded-full h-10 w-10 border-4 border-primary border-t-transparent mx-auto mb-3"></div>
+            <p className="text-gray-700 font-medium">Detecting text...</p>
+          </div>
         </div>
       )}
     </div>
