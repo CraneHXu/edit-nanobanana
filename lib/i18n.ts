@@ -20,6 +20,10 @@ const translations = {
     'toolbar.eraserSize': 'Size',
     'toolbar.compare': 'Compare',
     'toolbar.compareHint': 'Hold to compare with original',
+    'toolbar.zoomIn': 'Zoom in',
+    'toolbar.zoomOut': 'Zoom out',
+    'toolbar.resetZoom': 'Reset zoom (fit to view)',
+    'toolbar.zoomHint': 'Ctrl+scroll to zoom, scroll to pan',
 
     // ImageUploader
     'uploader.dropHere': 'Drop image here...',
@@ -81,6 +85,10 @@ const translations = {
     'toolbar.eraserSize': '大小',
     'toolbar.compare': '对比',
     'toolbar.compareHint': '按住对比原图',
+    'toolbar.zoomIn': '放大',
+    'toolbar.zoomOut': '缩小',
+    'toolbar.resetZoom': '重置缩放（适应视图）',
+    'toolbar.zoomHint': 'Ctrl+滚轮缩放，滚动平移',
 
     // ImageUploader
     'uploader.dropHere': '将图片拖放到这里...',

@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { Button } from '@/components/ui/button';
-import { Download, RotateCcw, Globe, RefreshCw, MousePointer, Eraser, Eye } from 'lucide-react';
+import { Download, RotateCcw, Globe, RefreshCw, MousePointer, Eraser, Eye, ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
 import { Slider } from '@/components/ui/slider';
 import { useEditorStore, EditorMode } from '@/store/editorStore';
 import { exportCanvasAsPNG } from '@/lib/fabric-utils';
@@ -28,6 +28,10 @@ export function Toolbar() {
     setEraserSize,
     isComparing,
     setIsComparing,
+    viewportZoom,
+    zoomIn,
+    zoomOut,
+    resetZoom,
   } = useEditorStore();
   const { t, locale, setLocale } = useI18n();
 
@@ -115,6 +119,39 @@ export function Toolbar() {
               <Eye className="w-4 h-4 mr-1" />
               {t('toolbar.compare')}
             </Button>
+
+            <div className="w-px h-6 bg-gray-300 mx-1" />
+
+            {/* Zoom Controls */}
+            <div className="flex items-center gap-1 border rounded-md p-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={zoomOut}
+                title={t('toolbar.zoomOut')}
+              >
+                <ZoomOut className="w-4 h-4" />
+              </Button>
+              <span className="text-xs text-gray-600 w-12 text-center">
+                {Math.round(viewportZoom * 100)}%
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={zoomIn}
+                title={t('toolbar.zoomIn')}
+              >
+                <ZoomIn className="w-4 h-4" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={resetZoom}
+                title={t('toolbar.resetZoom')}
+              >
+                <Maximize2 className="w-4 h-4" />
+              </Button>
+            </div>
 
             <div className="w-px h-6 bg-gray-300 mx-1" />
           </>

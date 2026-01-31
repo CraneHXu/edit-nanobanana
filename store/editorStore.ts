@@ -21,6 +21,10 @@ interface EditorState {
   canvas: any | null;
   canvasScale: number; // Scale factor for display (1/scale = export multiplier)
 
+  // Viewport zoom and pan
+  viewportZoom: number;
+  viewportPan: { x: number; y: number };
+
   // Selection
   selectedElementId: number | null;
 
@@ -39,6 +43,11 @@ interface EditorState {
   loadImage: (file: File) => Promise<void>;
   setCanvas: (canvas: any) => void;
   setCanvasScale: (scale: number) => void;
+  setViewportZoom: (zoom: number) => void;
+  setViewportPan: (pan: { x: number; y: number }) => void;
+  zoomIn: () => void;
+  zoomOut: () => void;
+  resetZoom: () => void;
   setDetections: (detections: OCRDetection[]) => void;
   setTextElements: (elements: Map<number, TextElement>) => void;
   updateElement: (id: number, updates: Partial<TextElement>) => void;
@@ -62,6 +71,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   textElements: new Map(),
   canvas: null,
   canvasScale: 1,
+  viewportZoom: 1,
+  viewportPan: { x: 0, y: 0 },
   selectedElementId: null,
   editorMode: 'select',
   eraserSize: 20,
@@ -97,6 +108,32 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   setCanvasScale: (scale: number) => {
     set({ canvasScale: scale });
+  },
+
+  setViewportZoom: (zoom: number) => {
+    // Clamp zoom between 0.25 and 4
+    const clampedZoom = Math.min(Math.max(zoom, 0.25), 4);
+    set({ viewportZoom: clampedZoom });
+    // Don't use Fabric's setZoom - we use CSS transform instead
+  },
+
+  setViewportPan: (pan: { x: number; y: number }) => {
+    set({ viewportPan: pan });
+    // Pan is handled by scroll container
+  },
+
+  zoomIn: () => {
+    const { viewportZoom, setViewportZoom } = get();
+    setViewportZoom(viewportZoom * 1.2);
+  },
+
+  zoomOut: () => {
+    const { viewportZoom, setViewportZoom } = get();
+    setViewportZoom(viewportZoom / 1.2);
+  },
+
+  resetZoom: () => {
+    set({ viewportZoom: 1, viewportPan: { x: 0, y: 0 } });
   },
 
   setDetections: (detections: OCRDetection[]) => {
@@ -264,6 +301,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       textElements: new Map(),
       canvas: null,
       canvasScale: 1,
+      viewportZoom: 1,
+      viewportPan: { x: 0, y: 0 },
       selectedElementId: null,
       editorMode: 'select',
       eraserSize: 20,

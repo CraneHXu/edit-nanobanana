@@ -49,6 +49,7 @@ export function getFabricModule() {
 
 export function CanvasEditor() {
   // Use a wrapper div instead of a canvas ref - Fabric will create its own canvas
+  const containerRef = useRef<HTMLDivElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const fabricCanvasRef = useRef<FabricCanvas | null>(null);
   const imageScaleRef = useRef<number>(1);
@@ -64,12 +65,13 @@ export function CanvasEditor() {
     setCanvasScale,
     setTextElements,
     setSelectedElement,
-    selectedElementId,
     updateElement,
     isDetecting,
     editorMode,
     eraserSize,
     isComparing,
+    viewportZoom,
+    setViewportZoom,
   } = useEditorStore();
 
   // Load fabric.js and fonts on mount
@@ -137,23 +139,41 @@ export function CanvasEditor() {
       // Check canvas is still valid after async operation
       if (!isCanvasValid(fabricCanvasRef.current)) return;
 
-      // Scale image to fit canvas
-      const canvasWidth = 800;
-      const canvasHeight = 600;
-      const scale = Math.min(
-        canvasWidth / (img.width || 1),
-        canvasHeight / (img.height || 1)
-      );
+      const imgWidth = img.width || 1;
+      const imgHeight = img.height || 1;
+
+      // Get container width for responsive sizing
+      const containerWidth = containerRef.current?.clientWidth || 800;
+      const maxHeight = 600;
+
+      // Calculate scale to fit width while maintaining aspect ratio
+      // For wide images, prioritize showing full width with scroll for height
+      // For tall images, limit height and allow horizontal scroll
+      let scale: number;
+
+      if (imgWidth / imgHeight > containerWidth / maxHeight) {
+        // Wide image: scale to fit container width, allow vertical scroll if needed
+        scale = Math.min(1, containerWidth / imgWidth);
+      } else {
+        // Normal or tall image: scale to fit within container
+        scale = Math.min(
+          containerWidth / imgWidth,
+          maxHeight / imgHeight
+        );
+      }
+
+      // Ensure minimum visibility
+      scale = Math.max(scale, 0.1);
 
       // Store the scale for detection coordinate transformation
       imageScaleRef.current = scale;
       setCanvasScale(scale);
 
-      // Update canvas size to match image
-      const scaledWidth = (img.width || 0) * scale;
-      const scaledHeight = (img.height || 0) * scale;
+      // Update canvas size to match scaled image
+      const scaledWidth = imgWidth * scale;
+      const scaledHeight = imgHeight * scale;
 
-      // Set dimensions using the width/height properties directly
+      // Set dimensions
       fabricCanvasRef.current!.setWidth(scaledWidth);
       fabricCanvasRef.current!.setHeight(scaledHeight);
 
@@ -171,7 +191,7 @@ export function CanvasEditor() {
     }).catch((error) => {
       console.error('Failed to load background image:', error);
     });
-  }, [fabricReady, originalImage]);
+  }, [fabricReady, originalImage, setCanvasScale]);
 
   // Create text objects from detections
   useEffect(() => {
@@ -528,6 +548,34 @@ export function CanvasEditor() {
     currentCanvas.renderAll();
   }, [isComparing]);
 
+  // Handle zoom with mouse wheel on container
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      // Only zoom when Ctrl/Cmd key is held
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        const delta = e.deltaY;
+        let newZoom = viewportZoom * (0.999 ** delta);
+
+        // Clamp zoom
+        if (newZoom > 4) newZoom = 4;
+        if (newZoom < 0.25) newZoom = 0.25;
+
+        setViewportZoom(newZoom);
+      }
+      // Without Ctrl/Cmd, allow normal scroll
+    };
+
+    container.addEventListener('wheel', handleWheel, { passive: false });
+
+    return () => {
+      container.removeEventListener('wheel', handleWheel);
+    };
+  }, [viewportZoom, setViewportZoom]);
+
   if (isDetecting) {
     return (
       <div className="flex items-center justify-center w-full h-[600px] bg-gray-100 rounded-lg">
@@ -540,23 +588,34 @@ export function CanvasEditor() {
   }
 
   return (
-    <div className="flex items-center justify-center bg-gray-100 rounded-lg p-4 relative">
-      <div ref={wrapperRef} className={`relative ${isComparing ? 'opacity-100' : ''}`}>
-        {/* Eraser cursor overlay */}
-        {editorMode === 'eraser' && cursorPos && (
-          <div
-            className="absolute pointer-events-none border-2 border-red-500 rounded-full bg-red-500/20"
-            style={{
-              left: cursorPos.x - eraserSize / 2,
-              top: cursorPos.y - eraserSize / 2,
-              width: eraserSize,
-              height: eraserSize,
-            }}
-          />
-        )}
+    <div
+      ref={containerRef}
+      className="flex items-center justify-center bg-gray-100 rounded-lg p-4 relative overflow-auto max-h-[70vh] min-h-[400px]"
+    >
+      <div
+        className={`relative ${isComparing ? 'opacity-100' : ''}`}
+        style={{
+          transform: `scale(${viewportZoom})`,
+          transformOrigin: 'center center',
+        }}
+      >
+        <div ref={wrapperRef} className="relative">
+          {/* Eraser cursor overlay */}
+          {editorMode === 'eraser' && cursorPos && (
+            <div
+              className="absolute pointer-events-none border-2 border-red-500 rounded-full bg-red-500/20"
+              style={{
+                left: cursorPos.x - eraserSize / 2,
+                top: cursorPos.y - eraserSize / 2,
+                width: eraserSize,
+                height: eraserSize,
+              }}
+            />
+          )}
+        </div>
       </div>
       {isComparing && (
-        <div className="absolute top-2 left-2 bg-black/70 text-white px-3 py-1 rounded text-sm">
+        <div className="absolute top-2 left-2 bg-black/70 text-white px-3 py-1 rounded text-sm z-10">
           Comparing with original
         </div>
       )}
