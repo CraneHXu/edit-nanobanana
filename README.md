@@ -1,6 +1,8 @@
+[English Version](#English)
+
 一个基于 Web 的图片文字编辑器，使用 OCR 技术自动检测图片中的文字，并允许你直接在图片上编辑和替换文字。
 
-[English Version](#English)
+在线demo：https://image-editor-web-tan.vercel.app/
 
 ## 功能特点
 
