@@ -1,6 +1,7 @@
 一个基于 Web 的图片文字编辑器，使用 OCR 技术自动检测图片中的文字，并允许你直接在图片上编辑和替换文字。
 
-[English](#English)
+[English Version](#English)
+
 ## 功能特点
 
 - **OCR 文字检测**：使用 PaddleOCR 自动检测上传图片中的文字
@@ -19,6 +20,52 @@
 - **画布**：Fabric.js 6
 - **状态管理**：Zustand
 - **OCR**：PaddleOCR（通过 API 调用）
+
+## 使用指南
+
+### 基本流程
+
+1. **上传图片**：拖放或点击上传图片（支持 PNG、JPG、JPEG、WEBP，最大 10MB）
+2. **等待 OCR**：系统会自动检测图片中的文字
+3. **编辑文字**：点击检测到的文字进行选择和编辑
+4. **调整样式**：使用侧边栏控件更改字体、大小、颜色
+5. **使用橡皮擦**：切换到橡皮擦模式，在遮盖层上涂抹以露出原始背景
+6. **对比原图**：按住"对比"按钮查看原始图片
+7. **导出图片**：点击"导出 PNG"下载编辑后的图片
+
+### 工具说明
+
+| 工具 | 说明 |
+|------|------|
+| 选择模式 | 点击选择文字元素进行编辑 |
+| 橡皮擦模式 | 在背景遮盖上涂抹以露出原始图片 |
+| 对比 | 按住查看原图 |
+| 恢复全部 | 将所有元素重置为原始状态 |
+| 重新开始 | 清除所有内容，重新开始 |
+
+### 文字控制
+
+- **显示/隐藏背景**：切换背景遮盖的可见性
+- **显示/隐藏文字**：切换文字的可见性
+- **字体**：从多种字体中选择，包括中文字体支持
+- **字号**：使用滑块或输入框调整
+- **字体颜色**：从检测到的颜色中选择或自定义
+- **背景颜色**：从检测到的颜色中选择或自定义
+- **重置为原始值**：将单个元素重置为原始状态
+
+## 已知限制
+
+- 目前只支持纯色背景遮盖，无法自动匹配复杂纹理或渐变背景
+
+## TODO
+
+- [ ] 支持渐变色背景遮盖
+- [ ] 支持纹理/图案背景填充
+- [ ] AI 智能背景修复（Inpainting）
+- [ ] 批量处理多张图片
+- [ ] 支持更多 OCR 引擎（如 Tesseract、Google Vision）
+- [ ] 撤销/重做功能
+- [ ] 自定义字体上传
 
 ## 快速开始
 
@@ -69,75 +116,17 @@ npm run build
 npm start
 ```
 
-## 使用指南
+## 贡献
 
-### 基本流程
+欢迎提交 Issue 和 Pull Request！
 
-1. **上传图片**：拖放或点击上传图片（支持 PNG、JPG、JPEG、WEBP，最大 10MB）
-2. **等待 OCR**：系统会自动检测图片中的文字
-3. **编辑文字**：点击检测到的文字进行选择和编辑
-4. **调整样式**：使用侧边栏控件更改字体、大小、颜色
-5. **使用橡皮擦**：切换到橡皮擦模式，在遮盖层上涂抹以露出原始背景
-6. **对比原图**：按住"对比"按钮查看原始图片
-7. **导出图片**：点击"导出 PNG"下载编辑后的图片
-
-### 工具说明
-
-| 工具 | 说明 |
-|------|------|
-| 选择模式 | 点击选择文字元素进行编辑 |
-| 橡皮擦模式 | 在背景遮盖上涂抹以露出原始图片 |
-| 对比 | 按住查看原图 |
-| 恢复全部 | 将所有元素重置为原始状态 |
-| 重新开始 | 清除所有内容，重新开始 |
-
-### 文字控制
-
-- **显示/隐藏背景**：切换背景遮盖的可见性
-- **显示/隐藏文字**：切换文字的可见性
-- **字体**：从多种字体中选择，包括中文字体支持
-- **字号**：使用滑块或输入框调整
-- **字体颜色**：从检测到的颜色中选择或自定义
-- **背景颜色**：从检测到的颜色中选择或自定义
-- **重置为原始值**：将单个元素重置为原始状态
-
-## 项目结构
-
-```
-image-editor-web/
-├── app/                    # Next.js App Router
-│   ├── api/               # API 路由
-│   │   └── ocr/          # OCR 接口（PaddleOCR）
-│   └── page.tsx          # 主页面
-├── components/
-│   ├── editor/           # 编辑器组件
-│   │   ├── CanvasEditor.tsx
-│   │   ├── Toolbar.tsx
-│   │   ├── Sidebar.tsx
-│   │   ├── TextControls.tsx
-│   │   └── FontSelector.tsx
-│   └── ui/               # 可复用 UI 组件
-├── lib/
-│   ├── fabric-utils.ts   # Fabric.js 工具函数
-│   ├── font-loader.ts    # Google Fonts 加载器
-│   └── i18n.ts           # 国际化
-├── store/
-│   └── editorStore.ts    # Zustand 状态管理
-└── types/                # TypeScript 类型定义
-```
-
-## 部署
-
-本项目可以部署到 Vercel、Netlify 或任何支持 Next.js 的平台。
-
-```bash
-# 部署到 Vercel
-npx vercel
-```
+如果这个项目对你有帮助，请给个 Star 支持一下！
 
 ## 许可证
 
 MIT License
+
+---
 
 # English
 
@@ -279,6 +268,26 @@ This project can be deployed to Vercel, Netlify, or any platform that supports N
 # Deploy to Vercel
 npx vercel
 ```
+
+## Known Limitations
+
+- Currently only supports solid color background covers, cannot automatically match complex textures or gradient backgrounds
+
+## TODO
+
+- [ ] Gradient background cover support
+- [ ] Texture/pattern background fill
+- [ ] AI-powered background inpainting
+- [ ] Batch processing for multiple images
+- [ ] Support more OCR engines (Tesseract, Google Vision, etc.)
+- [ ] Undo/Redo functionality
+- [ ] Custom font upload
+
+## Contributing
+
+Issues and Pull Requests are welcome!
+
+If you find this project helpful, please give it a Star!
 
 ## License
 
