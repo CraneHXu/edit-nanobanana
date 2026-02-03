@@ -4,7 +4,7 @@
  */
 
 import { OCRDetection, RGBColor } from '@/types/ocr';
-import type { Rect, Group, Canvas, FabricText } from 'fabric';
+import type { Rect, Group, Canvas, FabricText, Textbox } from 'fabric';
 
 /**
  * Convert RGB color object to CSS string
@@ -39,26 +39,27 @@ export function hexToRgb(hex: string): RGBColor {
 /**
  * Create a text-only object for editing (no background)
  * The text is positioned at the detection location and can be dragged/edited
+ * Uses Textbox for multi-line text wrapping support
  */
 export function createTextObject(
   fabric: typeof import('fabric'),
   detection: OCRDetection,
   fontFamily: string = 'Arial'
-): FabricText {
+): Textbox {
   const { bounds, text, textColor, fontSize } = detection;
 
-  // Create text object centered in the detection bounds
-  const textObj = new fabric.FabricText(text, {
+  // Create textbox object with width constraint for text wrapping
+  const textObj = new fabric.Textbox(text, {
     fontSize: fontSize,
     fill: rgbToString(textColor),
     fontFamily: fontFamily,
-    left: bounds.x + bounds.width / 2,
-    top: bounds.y + bounds.height / 2,
-    originX: 'center',
-    originY: 'center',
+    left: bounds.x,
+    top: bounds.y,
+    width: bounds.width,
     selectable: true,
     hasControls: true,
     hasBorders: true,
+    splitByGrapheme: true, // Better wrapping for CJK characters
   });
 
   // Store detection data as metadata

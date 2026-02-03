@@ -37,10 +37,12 @@ export default function Home() {
             </div>
           ) : null}
 
-          {/* Canvas is always rendered, just hidden when no image */}
-          <div className={!originalImage ? 'hidden' : 'w-full'}>
-            <CanvasEditor />
-          </div>
+          {/* Canvas only rendered when image is loaded */}
+          {originalImage && (
+            <div className="w-full">
+              <CanvasEditor />
+            </div>
+          )}
         </div>
 
         {/* Right Sidebar - Controls */}

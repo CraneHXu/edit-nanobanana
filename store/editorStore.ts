@@ -193,6 +193,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           fontSize: detection.fontSize,
           fill: `rgb(${detection.textColor.r}, ${detection.textColor.g}, ${detection.textColor.b})`,
           fontFamily: 'Noto Sans SC',
+          width: detection.bounds.width,
         });
         element.fabricObject.setCoords();
       }
@@ -290,10 +291,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   reset: () => {
-    const { canvas } = get();
-    if (canvas) {
-      canvas.dispose();
-    }
+    // Don't dispose canvas here - let the CanvasEditor component handle cleanup on unmount
     set({
       originalImage: null,
       imageFile: null,
