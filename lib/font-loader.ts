@@ -75,18 +75,21 @@ export async function loadGoogleFont(fontName: string): Promise<void> {
     link.rel = 'stylesheet';
 
     await new Promise<void>((resolve, reject) => {
-      link.onload = () => {
-        loadedFonts.add(fontName);
-        resolve();
-      };
+      link.onload = () => resolve();
       link.onerror = reject;
       document.head.appendChild(link);
     });
 
-    // Wait for font to be ready
+    // Explicitly load the font to ensure it's ready for canvas use
     if (document.fonts) {
-      await document.fonts.ready;
+      // Load both weights that we requested
+      await Promise.all([
+        document.fonts.load(`400 16px "${fontName}"`),
+        document.fonts.load(`700 16px "${fontName}"`),
+      ]);
     }
+
+    loadedFonts.add(fontName);
   } catch (error) {
     console.error(`Failed to load font ${fontName}:`, error);
   }

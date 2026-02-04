@@ -70,6 +70,10 @@ export function TextControls() {
       updateTextFont(selectedElement.fabricObject as any, newFont);
       updateElement(selectedElement.id, { fontFamily: newFont });
       canvas.renderAll();
+      // Force re-render after next frame to ensure font is applied on canvas
+      requestAnimationFrame(() => {
+        canvas.renderAll();
+      });
     }
   };
 

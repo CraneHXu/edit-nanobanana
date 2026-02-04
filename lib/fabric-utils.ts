@@ -131,6 +131,15 @@ export function updateTextFont(
   fontFamily: string
 ): void {
   textObj.set({ fontFamily });
+  // Force fabric to recalculate text dimensions with new font
+  (textObj as any).dirty = true;
+  // Clear any cached rendering
+  if (typeof (textObj as any)._clearCache === 'function') {
+    (textObj as any)._clearCache();
+  }
+  if (typeof (textObj as any).initDimensions === 'function') {
+    (textObj as any).initDimensions();
+  }
   textObj.setCoords();
 }
 
