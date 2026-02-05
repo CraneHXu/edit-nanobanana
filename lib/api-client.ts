@@ -11,10 +11,15 @@ const API_BASE_URL = '';
 // Vercel has a ~4.5MB payload limit, compress images to stay under
 const MAX_FILE_SIZE = 4 * 1024 * 1024; // 4MB to be safe
 
-async function compressImage(file: File, maxSize: number): Promise<File> {
+interface CompressResult {
+  file: File;
+  scale: number; // 1 means no compression, < 1 means compressed
+}
+
+async function compressImage(file: File, maxSize: number): Promise<CompressResult> {
   // If already small enough, return as-is
   if (file.size <= maxSize) {
-    return file;
+    return { file, scale: 1 };
   }
 
   return new Promise((resolve, reject) => {
@@ -47,7 +52,10 @@ async function compressImage(file: File, maxSize: number): Promise<File> {
             reject(new Error('Failed to compress image'));
             return;
           }
-          resolve(new File([blob], file.name, { type: 'image/jpeg' }));
+          resolve({
+            file: new File([blob], file.name, { type: 'image/jpeg' }),
+            scale: ratio,
+          });
         },
         'image/jpeg',
         0.85
@@ -65,7 +73,7 @@ async function compressImage(file: File, maxSize: number): Promise<File> {
 
 export async function detectText(imageFile: File): Promise<DetectionResponse> {
   // Compress image if too large for Vercel
-  const processedFile = await compressImage(imageFile, MAX_FILE_SIZE);
+  const { file: processedFile, scale } = await compressImage(imageFile, MAX_FILE_SIZE);
 
   const formData = new FormData();
   formData.append('image', processedFile);
@@ -80,7 +88,25 @@ export async function detectText(imageFile: File): Promise<DetectionResponse> {
     throw new Error(errorData.error || `Text detection failed: ${response.statusText}`);
   }
 
-  return response.json();
+  const result: DetectionResponse = await response.json();
+
+  // If image was compressed, scale coordinates back to original size
+  if (scale < 1) {
+    const inverseScale = 1 / scale;
+    result.detections = result.detections.map((detection) => ({
+      ...detection,
+      bbox: detection.bbox.map(([x, y]) => [x * inverseScale, y * inverseScale]) as [number, number][],
+      bounds: {
+        x: detection.bounds.x * inverseScale,
+        y: detection.bounds.y * inverseScale,
+        width: detection.bounds.width * inverseScale,
+        height: detection.bounds.height * inverseScale,
+      },
+      fontSize: Math.round(detection.fontSize * inverseScale),
+    }));
+  }
+
+  return result;
 }
 
 export async function healthCheck(): Promise<{ status: string }> {
