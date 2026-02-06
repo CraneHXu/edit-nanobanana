@@ -1,9 +1,9 @@
 /**
  * OCR API Route - Calls PaddleOCR API
- * Runs as Vercel Edge Function for faster cold starts
+ * Uses Streaming Response to avoid Vercel Edge 25s timeout
  */
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 
 // Use Edge Runtime for faster cold starts and global deployment
 export const runtime = 'edge';
@@ -37,79 +37,104 @@ interface PaddleOCRResponse {
 }
 
 export async function POST(request: NextRequest) {
-  try {
-    if (!OCR_API_TOKEN) {
-      return NextResponse.json(
-        { success: false, error: 'OCR API token not configured' },
-        { status: 500 }
-      );
+  const encoder = new TextEncoder();
+
+  // Create a TransformStream for streaming response
+  const stream = new TransformStream();
+  const writer = stream.writable.getWriter();
+
+  // Helper to send SSE message
+  const sendEvent = async (event: string, data: unknown) => {
+    await writer.write(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+  };
+
+  // Start async processing
+  (async () => {
+    try {
+      // Send initial connection confirmation
+      await sendEvent('connected', { message: 'Processing started' });
+
+      if (!OCR_API_TOKEN) {
+        await sendEvent('error', { success: false, error: 'OCR API token not configured' });
+        await writer.close();
+        return;
+      }
+
+      const formData = await request.formData();
+      const imageFile = formData.get('image') as File | null;
+
+      if (!imageFile) {
+        await sendEvent('error', { success: false, error: 'No image provided' });
+        await writer.close();
+        return;
+      }
+
+      await sendEvent('progress', { stage: 'processing', message: 'Converting image...' });
+
+      // Convert file to base64 (Edge-compatible)
+      const arrayBuffer = await imageFile.arrayBuffer();
+      const base64Data = arrayBufferToBase64(arrayBuffer);
+
+      // Determine file type (0 for PDF, 1 for image)
+      const isPdf = imageFile.type === 'application/pdf';
+      const fileType = isPdf ? 0 : 1;
+
+      await sendEvent('progress', { stage: 'calling_api', message: 'Calling OCR API...' });
+
+      // Call PaddleOCR API
+      const ocrResponse = await fetch(OCR_API_URL, {
+        method: 'POST',
+        headers: {
+          'Authorization': `token ${OCR_API_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          file: base64Data,
+          fileType: fileType,
+          useDocOrientationClassify: false,
+          useDocUnwarping: false,
+          useTextlineOrientation: false,
+        }),
+      });
+
+      if (!ocrResponse.ok) {
+        const errorText = await ocrResponse.text();
+        console.error('PaddleOCR API error:', errorText);
+        await sendEvent('error', { success: false, error: `OCR API error: ${ocrResponse.status}` });
+        await writer.close();
+        return;
+      }
+
+      await sendEvent('progress', { stage: 'parsing', message: 'Parsing results...' });
+
+      const ocrData: PaddleOCRResponse = await ocrResponse.json();
+
+      // Transform PaddleOCR response to our format
+      const detections = parseOCRResult(ocrData);
+
+      // Send final result
+      await sendEvent('result', {
+        success: true,
+        detections,
+        count: detections.length,
+      });
+
+    } catch (error) {
+      console.error('OCR processing error:', error);
+      await sendEvent('error', { success: false, error: 'OCR processing failed' });
+    } finally {
+      await writer.close();
     }
+  })();
 
-    const formData = await request.formData();
-    const imageFile = formData.get('image') as File | null;
-
-    if (!imageFile) {
-      return NextResponse.json(
-        { success: false, error: 'No image provided' },
-        { status: 400 }
-      );
-    }
-
-    // Convert file to base64 (Edge-compatible)
-    const arrayBuffer = await imageFile.arrayBuffer();
-    const base64Data = arrayBufferToBase64(arrayBuffer);
-
-    // Determine file type (0 for PDF, 1 for image)
-    const isPdf = imageFile.type === 'application/pdf';
-    const fileType = isPdf ? 0 : 1;
-
-    // Call PaddleOCR API
-    const ocrResponse = await fetch(OCR_API_URL, {
-      method: 'POST',
-      headers: {
-        'Authorization': `token ${OCR_API_TOKEN}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        file: base64Data,
-        fileType: fileType,
-        useDocOrientationClassify: false,
-        useDocUnwarping: false,
-        useTextlineOrientation: false,
-      }),
-    });
-
-    if (!ocrResponse.ok) {
-      const errorText = await ocrResponse.text();
-      console.error('PaddleOCR API error:', errorText);
-      return NextResponse.json(
-        { success: false, error: `OCR API error: ${ocrResponse.status}` },
-        { status: ocrResponse.status }
-      );
-    }
-
-    const ocrData: PaddleOCRResponse = await ocrResponse.json();
-
-    // Transform PaddleOCR response to our format
-    const detections = parseOCRResult(ocrData);
-
-    // Debug: log the raw response structure
-    console.log('PaddleOCR raw response:', JSON.stringify(ocrData.result, null, 2));
-
-    return NextResponse.json({
-      success: true,
-      detections,
-      count: detections.length,
-      rawResult: ocrData.result, // Include raw result for debugging
-    });
-
-  } catch (error) {
-    console.error('OCR processing error:', error);
-    return NextResponse.json(
-      { success: false, error: 'OCR processing failed' },
-      { status: 500 }
-    );
-  }
+  // Return streaming response immediately (avoids 25s timeout)
+  return new Response(stream.readable, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    },
+  });
 }
 
 function parseOCRResult(ocrData: PaddleOCRResponse) {
