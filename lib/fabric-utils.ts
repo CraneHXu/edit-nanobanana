@@ -3,6 +3,7 @@
  */
 
 import { BoundingBox, RGBColor } from '@/types/ocr';
+import { TEXTBOX_LINE_HEIGHT } from '@/lib/text-layout';
 import type { TextElement } from '@/types/canvas';
 import type { Canvas, Rect, Textbox } from 'fabric';
 
@@ -108,6 +109,7 @@ export function syncTextObject(textObj: Textbox, region: TextElement, scale: num
     fontWeight: region.fontWeight,
     textAlign: region.textAlign,
     fontSize: Math.max(1, region.fontSize * scale),
+    lineHeight: TEXTBOX_LINE_HEIGHT,
     fill: rgbToString(region.fontColor),
     visible: region.showText,
     scaleX: 1,

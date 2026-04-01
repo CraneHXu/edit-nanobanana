@@ -145,7 +145,7 @@ function parseOCRResult(ocrData: PaddleOCRResponse) {
     confidence: number;
     textColor: { r: number; g: number; b: number };
     bgColor: { r: number; g: number; b: number };
-    fontSize: number;
+    fontSize: number | null;
     bounds: { x: number; y: number; width: number; height: number };
   }> = [];
 
@@ -207,7 +207,7 @@ function parseOCRResult(ocrData: PaddleOCRResponse) {
               confidence,
               textColor: { r: 0, g: 0, b: 0 },
               bgColor: { r: 255, g: 255, b: 255 },
-              fontSize: estimateFontSize(bounds.height),
+              fontSize: null,
               bounds,
             });
           }
@@ -224,7 +224,7 @@ function parseOCRResult(ocrData: PaddleOCRResponse) {
           confidence: 0.9,
           textColor: { r: 0, g: 0, b: 0 },
           bgColor: { r: 255, g: 255, b: 255 },
-          fontSize: 16,
+          fontSize: null,
           bounds: { x: 0, y: globalIndex * 25, width: 100, height: 20 },
         });
       }
@@ -248,7 +248,7 @@ function parseOCRResult(ocrData: PaddleOCRResponse) {
             confidence,
             textColor: { r: 0, g: 0, b: 0 },
             bgColor: { r: 255, g: 255, b: 255 },
-            fontSize: estimateFontSize(bounds.height),
+            fontSize: null,
             bounds,
           });
         }
@@ -278,9 +278,4 @@ function calculateBounds(bbox: number[][]) {
     width: maxX - minX,
     height: maxY - minY,
   };
-}
-
-function estimateFontSize(height: number): number {
-  // Approximate font size based on bounding box height
-  return Math.max(12, Math.round(height * 0.8));
 }

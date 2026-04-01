@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from 'react';
-import { Eye, EyeOff, RotateCcw, Square } from 'lucide-react';
+import { AlignCenter, AlignLeft, AlignRight, Bold, Eye, EyeOff, RotateCcw, Square } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -9,6 +9,7 @@ import { Slider } from '@/components/ui/slider';
 import { FontSelector } from './FontSelector';
 import { useEditorStore } from '@/store/editorStore';
 import { rgbToHex, hexToRgb } from '@/lib/fabric-utils';
+import { fitFontSizeToBox } from '@/lib/text-layout';
 import { RGBColor } from '@/types/ocr';
 import { useI18n } from '@/lib/i18n';
 
@@ -59,8 +60,20 @@ export function TextControls() {
   };
 
   const handleFontChange = (newFont: string) => {
+    const fittedFontSize = fitFontSizeToBox(
+      selectedElement.text,
+      selectedElement.bbox,
+      newFont,
+      selectedElement.fontWeight,
+    );
+
     setLocalFontFamily(newFont);
-    updateElement(selectedElement.id, { fontFamily: newFont });
+    setLocalFontSize(fittedFontSize);
+    setLocalFontSizeInput(String(Math.round(fittedFontSize)));
+    updateElement(selectedElement.id, {
+      fontFamily: newFont,
+      fontSize: fittedFontSize,
+    });
   };
 
   const handleFontSizeChange = (value: number[]) => {
@@ -97,6 +110,27 @@ export function TextControls() {
       fontColor: newColor,
       textColorMode: 'manual',
     });
+  };
+
+  const handleFontWeightChange = () => {
+    const nextWeight = selectedElement.fontWeight === 'bold' ? 'normal' : 'bold';
+    const fittedFontSize = fitFontSizeToBox(
+      selectedElement.text,
+      selectedElement.bbox,
+      selectedElement.fontFamily,
+      nextWeight,
+    );
+
+    setLocalFontSize(fittedFontSize);
+    setLocalFontSizeInput(String(Math.round(fittedFontSize)));
+    updateElement(selectedElement.id, {
+      fontWeight: nextWeight,
+      fontSize: fittedFontSize,
+    });
+  };
+
+  const handleTextAlignChange = (textAlign: 'left' | 'center' | 'right') => {
+    updateElement(selectedElement.id, { textAlign });
   };
 
   const handleBgColorChange = (hexColor: string) => {
@@ -176,6 +210,53 @@ export function TextControls() {
         onValueChange={handleFontChange}
         disabled={!selectedElement.showText}
       />
+
+      <div className="space-y-2">
+        <Label>{t('controls.fontWeight')}</Label>
+        <Button
+          type="button"
+          variant={selectedElement.fontWeight === 'bold' ? 'default' : 'outline'}
+          className="w-full"
+          onClick={handleFontWeightChange}
+          disabled={!selectedElement.showText}
+        >
+          <Bold className="w-4 h-4 mr-2" />
+          {t('controls.bold')}
+        </Button>
+      </div>
+
+      <div className="space-y-2">
+        <Label>{t('controls.textAlign')}</Label>
+        <div className="grid grid-cols-3 gap-2">
+          <Button
+            type="button"
+            variant={selectedElement.textAlign === 'left' ? 'default' : 'outline'}
+            onClick={() => handleTextAlignChange('left')}
+            disabled={!selectedElement.showText}
+          >
+            <AlignLeft className="w-4 h-4 mr-2" />
+            {t('controls.alignLeft')}
+          </Button>
+          <Button
+            type="button"
+            variant={selectedElement.textAlign === 'center' ? 'default' : 'outline'}
+            onClick={() => handleTextAlignChange('center')}
+            disabled={!selectedElement.showText}
+          >
+            <AlignCenter className="w-4 h-4 mr-2" />
+            {t('controls.alignCenter')}
+          </Button>
+          <Button
+            type="button"
+            variant={selectedElement.textAlign === 'right' ? 'default' : 'outline'}
+            onClick={() => handleTextAlignChange('right')}
+            disabled={!selectedElement.showText}
+          >
+            <AlignRight className="w-4 h-4 mr-2" />
+            {t('controls.alignRight')}
+          </Button>
+        </div>
+      </div>
 
       <div className="space-y-2">
         <div className="flex items-center justify-between">

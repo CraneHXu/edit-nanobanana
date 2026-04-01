@@ -3,6 +3,7 @@
  */
 
 import { create } from 'zustand';
+import { fitFontSizeToBox } from '@/lib/text-layout';
 import { OCRDetection } from '@/types/ocr';
 import { PageModel, TextElement } from '@/types/canvas';
 
@@ -91,6 +92,11 @@ function buildOriginalSnapshot(region: Omit<TextElement, 'original'>): TextEleme
 }
 
 function createTextElement(detection: OCRDetection): TextElement {
+  const fontWeight = detection.fontWeight ?? 'normal';
+  const fontSize = detection.fontSize ?? fitFontSizeToBox(detection.text, detection.bounds, 'Noto Sans SC', fontWeight);
+  const textColorRaw = detection.textColorRaw ?? detection.textColor;
+  const textColorQuantized = detection.textColorQuantized ?? detection.textColor;
+
   const base: Omit<TextElement, 'original'> = {
     id: detection.index,
     bbox: { ...detection.bounds },
@@ -98,13 +104,13 @@ function createTextElement(detection: OCRDetection): TextElement {
     text: detection.text,
     confidence: detection.confidence,
     fontFamily: 'Noto Sans SC',
-    fontSize: detection.fontSize,
-    fontWeight: 'normal',
-    textAlign: 'left',
+    fontSize,
+    fontWeight,
+    textAlign: detection.textAlign ?? 'left',
     fontColor: { ...detection.textColor },
-    textColorRaw: { ...detection.textColor },
+    textColorRaw: { ...textColorRaw },
     textColorMode: 'auto',
-    textColorQuantized: { ...detection.textColor },
+    textColorQuantized: { ...textColorQuantized },
     bgColor: { ...detection.bgColor },
     bgMode: 'fill',
     showBackground: true,

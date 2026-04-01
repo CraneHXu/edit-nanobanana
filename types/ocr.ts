@@ -3,6 +3,8 @@
  * Matches backend Python response structure
  */
 
+import type { FontWeight, TextAlign } from './canvas';
+
 export interface RGBColor {
   r: number;
   g: number;
@@ -22,8 +24,12 @@ export interface OCRDetection {
   text: string;
   confidence: number;
   textColor: RGBColor;
+  textColorRaw?: RGBColor;
+  textColorQuantized?: RGBColor;
   bgColor: RGBColor;
-  fontSize: number;
+  fontSize: number | null;
+  fontWeight?: FontWeight;
+  textAlign?: TextAlign;
   bounds: BoundingBox;
 }
 

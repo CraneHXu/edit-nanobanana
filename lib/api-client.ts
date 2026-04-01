@@ -112,7 +112,7 @@ export async function detectText(
         width: detection.bounds.width * inverseScale,
         height: detection.bounds.height * inverseScale,
       },
-      fontSize: Math.round(detection.fontSize * inverseScale),
+      fontSize: detection.fontSize === null ? null : Math.round(detection.fontSize * inverseScale),
     }));
   }
 

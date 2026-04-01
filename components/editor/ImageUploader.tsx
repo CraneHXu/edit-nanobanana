@@ -5,7 +5,7 @@ import { useDropzone } from 'react-dropzone';
 import { Upload } from 'lucide-react';
 import { useEditorStore } from '@/store/editorStore';
 import { detectText } from '@/lib/api-client';
-import { enhanceDetectionsWithColors } from '@/lib/color-sampler';
+import { enhanceDetectionsWithStyles } from '@/lib/color-sampler';
 import { useI18n } from '@/lib/i18n';
 
 export function ImageUploader() {
@@ -37,13 +37,13 @@ export function ImageUploader() {
       const response = await detectText(file);
       console.log('Text detection complete:', response.count, 'regions found');
 
-      // Enhance detections with sampled colors from the image
-      console.log('Sampling colors from image...');
-      const enhancedDetections = await enhanceDetectionsWithColors(
+      // Enhance detections with browser-side style inference
+      console.log('Inferring font size and colors from image...');
+      const enhancedDetections = await enhanceDetectionsWithStyles(
         response.detections,
         imageUrl
       );
-      console.log('Colors sampled successfully');
+      console.log('Style inference complete');
 
       initializeFromDetections(enhancedDetections);
       setIsDetecting(false);

@@ -66,3 +66,73 @@
 
 - 会话持久化依赖 `localStorage` 保存原图 data URL，超大图片可能触发浏览器存储配额。
 - 当前背景层仍然是 `fill + eraser`，不是 `cleanLayer`，复杂背景场景依旧会失真。
+
+## 2026-04-01 第二阶段继续推进
+
+参考文档：`reference/image-editor-web-upgrade.md`
+
+本轮范围限定在：
+
+- 去掉 OCR route 对字号经验值的主导
+- 前端统一字号拟合
+- 升级字体颜色/背景颜色判断
+- 补最小基础样式入口
+
+### 已完成
+
+- `app/api/ocr/route.ts`
+  - OCR 服务端不再返回 `height * 0.8` 这种经验字号，统一改为 `fontSize: null`，明确字号应由前端按 bbox 拟合。
+
+- `lib/text-layout.ts`
+  - 统一字号拟合继续保留在前端。
+  - 拟合时同时约束宽度和高度，并加入轻量 padding，避免文字贴边。
+  - 搜索上限不再被 bbox 高度直接卡死，换字体后更容易得到接近原图的字号。
+
+- `lib/color-sampler.ts`
+  - 原 `enhanceDetectionsWithColors()` 升级为 `enhanceDetectionsWithStyles()`。
+  - 上传后会在浏览器侧统一推断：
+    - `fontSize`
+    - `textColor`
+    - `textColorRaw`
+    - `textColorQuantized`
+    - `bgColor`
+  - 取色不再只靠单一路径，改成“高对比像素 / 亮暗双路径 / 边缘像素 / 非背景聚合”的组合判断，再选最优候选色。
+  - 保留 `raw` 与 `quantized` 双轨颜色结果，真正写入文本对象的是 `raw`。
+
+- `store/editorStore.ts`
+  - 初始化区域模型时优先使用浏览器侧推断出的 `fontSize`、`textColorRaw`、`textColorQuantized`。
+  - 即使旧数据里 `fontSize` 为空，也会回退到统一拟合函数，不再依赖 OCR route。
+
+- `components/editor/ImageUploader.tsx`
+  - OCR 完成后不再只做颜色增强，而是统一做字体大小与颜色属性推断后再进入页面模型。
+
+- `components/editor/TextControls.tsx`
+  - 新增 `fontWeight` 与 `textAlign` 的最小编辑入口。
+  - 切换字体或字重时，会立即按当前 `text + bbox + font` 重新拟合字号，避免沿用旧字体的尺寸。
+
+- `lib/fabric-utils.ts`
+  - Fabric 文本对象的 `lineHeight` 与字号拟合逻辑对齐，减少预览和拟合结果之间的偏差。
+
+### 验证结果
+
+- 已执行：`npm run build`
+- 结果：通过
+
+构建警告：
+
+- Next.js 推断 workspace root 时发现多个 `package-lock.json`
+- 本地 `@next/swc` 版本仍是 `15.5.7`，而 Next.js 是 `15.5.11`
+- `/api/ocr` 使用 edge runtime，因此对应页面不会走静态生成
+
+这些都是现有工程告警，不是本轮改动引入的构建失败。
+
+### 当前仍未完成
+
+- `fontWeight` / `textAlign` 目前只补了模型和手动编辑入口，还没有可靠的自动识别逻辑。
+- 多色文字 `segment` 级识别仍未做。
+- 背景修复仍然是 `fill + eraser`，还没进入 `cleanLayer` 阶段。
+
+### 现存风险
+
+- 当前字体大小拟合依赖浏览器字体测量；如果目标字体网络加载失败，会退回浏览器 fallback 字体，精度会下降。
+- 当前颜色提取虽然比单阈值稳定，但仍然只输出“单区域单主色”；渐变字、强描边字、多色字仍可能被压成单色。
