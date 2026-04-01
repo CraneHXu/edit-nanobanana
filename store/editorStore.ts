@@ -5,7 +5,7 @@
 import { create } from 'zustand';
 import { estimateFontSizeToBox } from '@/lib/text-layout';
 import { BoundingBox, OCRDetection } from '@/types/ocr';
-import { PageModel, TextElement } from '@/types/canvas';
+import { PageModel, PreviewMode, TextElement } from '@/types/canvas';
 
 export type EditorMode = 'select' | 'eraser';
 
@@ -25,10 +25,12 @@ interface EditorState {
   viewportPan: { x: number; y: number };
   selectedElementId: number | null;
   editorMode: EditorMode;
+  previewMode: PreviewMode;
   eraserSize: number;
   isComparing: boolean;
   isLoading: boolean;
   isDetecting: boolean;
+  isCleaningBackground: boolean;
   sessionHydrated: boolean;
   loadImage: (file: File) => Promise<void>;
   initializeFromDetections: (detections: OCRDetection[]) => void;
@@ -43,15 +45,18 @@ interface EditorState {
   resetZoom: () => void;
   updateElement: (id: number, updates: Partial<TextElement>) => void;
   replaceElements: (elements: TextElement[]) => void;
-  toggleShowBackground: (id: number) => void;
+  deleteElement: (id: number) => void;
   toggleShowText: (id: number) => void;
   resetElement: (id: number) => void;
   restoreAll: () => void;
   setSelectedElement: (id: number | null) => void;
   setIsDetecting: (isDetecting: boolean) => void;
   setEditorMode: (mode: EditorMode) => void;
+  setPreviewMode: (mode: PreviewMode) => void;
   setEraserSize: (size: number) => void;
   setIsComparing: (isComparing: boolean) => void;
+  setIsCleaningBackground: (isCleaningBackground: boolean) => void;
+  setCleanLayer: (cleanLayer: string | null) => void;
   reset: () => void;
 }
 
@@ -153,6 +158,7 @@ function createTextElement(detection: OCRDetection): TextElement {
 
   const base: Omit<TextElement, 'original'> = {
     id: detection.index,
+    removed: false,
     sourceBounds,
     bbox: geometry.bbox,
     sourcePolygon,
@@ -194,6 +200,7 @@ function normalizeTextElement(region: any): TextElement {
 
   const normalized: Omit<TextElement, 'original'> = {
     id: region.id,
+    removed: region.removed === true,
     sourceBounds,
     bbox,
     sourcePolygon,
@@ -211,7 +218,7 @@ function normalizeTextElement(region: any): TextElement {
     textColorQuantized: region.textColorQuantized ?? region.textColorRaw ?? region.fontColor ?? { r: 0, g: 0, b: 0 },
     bgColor: region.bgColor ?? { r: 255, g: 255, b: 255 },
     bgMode: region.bgMode === 'manual' || region.bgMode === 'none' || region.bgMode === 'inpaint' ? region.bgMode : 'fill',
-    showBackground: region.showBackground !== false,
+    showBackground: true,
     showText: region.showText !== false,
     eraserPaths: Array.isArray(region.eraserPaths) ? region.eraserPaths : [],
   };
@@ -227,6 +234,7 @@ function normalizeTextElement(region: any): TextElement {
           fontColor: region.original.fontColor ?? normalized.fontColor,
           textColorRaw: region.original.textColorRaw ?? normalized.textColorRaw,
           bgColor: region.original.bgColor ?? normalized.bgColor,
+          showBackground: true,
         }
       : buildOriginalSnapshot(normalized),
   };
@@ -236,11 +244,23 @@ function normalizePageModel(pageModel: PageModel): PageModel {
   return {
     ...pageModel,
     regions: Array.isArray(pageModel.regions) ? pageModel.regions.map(normalizeTextElement) : [],
+    cleanLayer: pageModel.cleanLayer ?? null,
   };
 }
 
 function replaceRegion(regions: TextElement[], id: number, updater: (region: TextElement) => TextElement): TextElement[] {
   return regions.map((region) => (region.id === id ? updater(region) : region));
+}
+
+function getActiveRegions(regions: TextElement[]): TextElement[] {
+  return regions.filter((region) => !region.removed);
+}
+
+function shouldInvalidateCleanLayer(updates: Partial<TextElement>): boolean {
+  return (
+    'sourceBounds' in updates
+    || 'sourcePolygon' in updates
+  );
 }
 
 export const useEditorStore = create<EditorState>((set, get) => ({
@@ -254,10 +274,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   viewportPan: { x: 0, y: 0 },
   selectedElementId: null,
   editorMode: 'select',
+  previewMode: 'final',
   eraserSize: 20,
   isComparing: false,
   isLoading: false,
   isDetecting: false,
+  isCleaningBackground: false,
   sessionHydrated: false,
 
   loadImage: async (file: File) => {
@@ -273,6 +295,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         isLoading: false,
         selectedElementId: null,
         isComparing: false,
+        previewMode: 'final',
       });
     } catch (error) {
       console.error('Failed to load image:', error);
@@ -296,6 +319,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         cleanLayer: null,
       },
       selectedElementId: detections[0]?.index ?? null,
+      previewMode: 'final',
     });
   },
 
@@ -307,6 +331,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       imageFile: null,
       pageModel: normalizedPageModel,
       selectedElementId: normalizedPageModel.regions[0]?.id ?? null,
+      previewMode: 'final',
       sessionHydrated: true,
     });
   },
@@ -336,14 +361,17 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   resetZoom: () => set({ viewportZoom: 1, viewportPan: { x: 0, y: 0 } }),
 
   updateElement: (id: number, updates: Partial<TextElement>) => {
-    const { pageModel } = get();
+    const { pageModel, previewMode } = get();
     if (!pageModel) return;
+    const invalidateCleanLayer = shouldInvalidateCleanLayer(updates);
 
     set({
       pageModel: {
         ...pageModel,
         regions: replaceRegion(pageModel.regions, id, (region) => ({ ...region, ...updates })),
+        cleanLayer: invalidateCleanLayer ? null : (pageModel.cleanLayer ?? null),
       },
+      previewMode: invalidateCleanLayer ? 'final' : previewMode,
     });
   },
 
@@ -354,19 +382,30 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       pageModel: {
         ...pageModel,
         regions: elements,
+        cleanLayer: null,
       },
+      previewMode: 'final',
     });
   },
 
-  toggleShowBackground: (id: number) => {
+  deleteElement: (id: number) => {
     const { pageModel } = get();
     if (!pageModel) return;
+
+    const regions = replaceRegion(pageModel.regions, id, (region) => ({
+      ...region,
+      removed: true,
+    }));
+    const nextSelected = getActiveRegions(regions).find((region) => region.id !== id)?.id ?? null;
 
     set({
       pageModel: {
         ...pageModel,
-        regions: replaceRegion(pageModel.regions, id, (region) => ({ ...region, showBackground: !region.showBackground })),
+        regions,
+        cleanLayer: null,
       },
+      selectedElementId: nextSelected,
+      previewMode: 'final',
     });
   },
 
@@ -392,6 +431,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         regions: replaceRegion(pageModel.regions, id, (region) => ({
           ...region,
           ...region.original,
+          removed: false,
+          showBackground: true,
           bbox: { ...region.original.bbox },
           layoutOffsetY: region.original.layoutOffsetY,
           fontColor: { ...region.original.fontColor },
@@ -399,7 +440,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           bgColor: region.original.bgColor ? { ...region.original.bgColor } : null,
           eraserPaths: [],
         })),
+        cleanLayer: null,
       },
+      previewMode: 'final',
     });
   },
 
@@ -413,6 +456,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         regions: pageModel.regions.map((region) => ({
           ...region,
           ...region.original,
+          removed: false,
+          showBackground: true,
           bbox: { ...region.original.bbox },
           layoutOffsetY: region.original.layoutOffsetY,
           fontColor: { ...region.original.fontColor },
@@ -420,16 +465,32 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           bgColor: region.original.bgColor ? { ...region.original.bgColor } : null,
           eraserPaths: [],
         })),
+        cleanLayer: null,
       },
       selectedElementId: pageModel.regions[0]?.id ?? null,
+      previewMode: 'final',
     });
   },
 
   setSelectedElement: (id: number | null) => set({ selectedElementId: id }),
   setIsDetecting: (isDetecting: boolean) => set({ isDetecting }),
   setEditorMode: (mode: EditorMode) => set({ editorMode: mode }),
+  setPreviewMode: (mode: PreviewMode) => set({ previewMode: mode }),
   setEraserSize: (size: number) => set({ eraserSize: size }),
   setIsComparing: (isComparing: boolean) => set({ isComparing }),
+  setIsCleaningBackground: (isCleaningBackground: boolean) => set({ isCleaningBackground }),
+  setCleanLayer: (cleanLayer: string | null) => {
+    const { pageModel, previewMode } = get();
+    if (!pageModel) return;
+
+    set({
+      pageModel: {
+        ...pageModel,
+        cleanLayer,
+      },
+      previewMode: cleanLayer ? previewMode : 'final',
+    });
+  },
 
   reset: () => {
     set({
@@ -443,10 +504,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       viewportPan: { x: 0, y: 0 },
       selectedElementId: null,
       editorMode: 'select',
+      previewMode: 'final',
       eraserSize: 20,
       isComparing: false,
       isLoading: false,
       isDetecting: false,
+      isCleaningBackground: false,
     });
   },
 }));

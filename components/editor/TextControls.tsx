@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from 'react';
-import { AlignCenter, AlignLeft, AlignRight, Bold, Eye, EyeOff, Palette, RotateCcw, Square, Wand2 } from 'lucide-react';
+import { AlignCenter, AlignLeft, AlignRight, Bold, Eye, EyeOff, Palette, RotateCcw, Trash2, Wand2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -20,14 +20,14 @@ export function TextControls() {
     pageModel,
     originalImage,
     updateElement,
-    toggleShowBackground,
+    deleteElement,
     toggleShowText,
     resetElement,
   } = useEditorStore();
   const { t } = useI18n();
 
   const selectedElement = selectedElementId !== null
-    ? pageModel?.regions.find((region) => region.id === selectedElementId) ?? null
+    ? pageModel?.regions.find((region) => region.id === selectedElementId && !region.removed) ?? null
     : null;
 
   const [localText, setLocalText] = useState('');
@@ -35,7 +35,6 @@ export function TextControls() {
   const [localFontSizeInput, setLocalFontSizeInput] = useState('20');
   const [localFontFamily, setLocalFontFamily] = useState('Noto Sans SC');
   const [localFontColor, setLocalFontColor] = useState<RGBColor>({ r: 0, g: 0, b: 0 });
-  const [localBgColor, setLocalBgColor] = useState<RGBColor>({ r: 255, g: 255, b: 255 });
   const [isResamplingColors, setIsResamplingColors] = useState(false);
 
   useEffect(() => {
@@ -46,7 +45,6 @@ export function TextControls() {
     setLocalFontSizeInput(String(Math.round(selectedElement.fontSize)));
     setLocalFontFamily(selectedElement.fontFamily);
     setLocalFontColor(selectedElement.fontColor);
-    setLocalBgColor(selectedElement.bgColor ?? { r: 255, g: 255, b: 255 });
   }, [selectedElement]);
 
   if (!selectedElement) {
@@ -138,15 +136,6 @@ export function TextControls() {
     updateElement(selectedElement.id, { textAlign });
   };
 
-  const handleBgColorChange = (hexColor: string) => {
-    const newColor = hexToRgb(hexColor);
-    setLocalBgColor(newColor);
-    updateElement(selectedElement.id, {
-      bgColor: newColor,
-      bgMode: 'manual',
-    });
-  };
-
   const handleRefreshAutoColors = async () => {
     if (!originalImage || selectedElement.textColorMode !== 'auto') {
       return;
@@ -167,11 +156,7 @@ export function TextControls() {
       };
 
       setLocalFontColor(sampledStyle.textColorRaw);
-
-      if (selectedElement.bgMode !== 'manual') {
-        updates.bgColor = sampledStyle.bgColor;
-        setLocalBgColor(sampledStyle.bgColor);
-      }
+      updates.bgColor = sampledStyle.bgColor;
 
       updateElement(selectedElement.id, updates);
     } catch (error) {
@@ -190,12 +175,6 @@ export function TextControls() {
     });
   };
 
-  const handleToggleShowBackground = () => {
-    if (selectedElementId !== null) {
-      toggleShowBackground(selectedElementId);
-    }
-  };
-
   const handleToggleShowText = () => {
     if (selectedElementId !== null) {
       toggleShowText(selectedElementId);
@@ -208,28 +187,29 @@ export function TextControls() {
     }
   };
 
+  const handleDelete = () => {
+    if (selectedElementId !== null) {
+      deleteElement(selectedElementId);
+    }
+  };
+
   return (
     <div className="p-6 space-y-6">
       <div>
         <h3 className="text-lg font-semibold mb-4">
           {t('controls.editText')} [{selectedElement.id}]
         </h3>
+        <p className="text-xs text-gray-500">
+          {t('controls.deleteRegionHint')}
+        </p>
       </div>
 
       <div className="space-y-2">
         <Label>{t('controls.visibility')}</Label>
         <div className="flex gap-2">
           <Button
-            variant={selectedElement.showBackground ? 'default' : 'outline'}
-            className="flex-1"
-            onClick={handleToggleShowBackground}
-          >
-            <Square className="w-4 h-4 mr-2" />
-            {t('controls.showBackground')}
-          </Button>
-          <Button
             variant={selectedElement.showText ? 'default' : 'outline'}
-            className="flex-1"
+            className="w-full"
             onClick={handleToggleShowText}
           >
             {selectedElement.showText ? (
@@ -379,27 +359,6 @@ export function TextControls() {
         </p>
       </div>
 
-      {selectedElement.showBackground && (
-        <div className="space-y-2">
-          <Label htmlFor="bg-color">{t('controls.bgColor')}</Label>
-          <div className="flex items-center gap-3">
-            <input
-              type="color"
-              id="bg-color"
-              value={rgbToHex(localBgColor)}
-              onChange={(e) => handleBgColorChange(e.target.value)}
-              className="w-10 h-10 rounded border border-gray-300 cursor-pointer"
-            />
-            <Input
-              value={rgbToHex(localBgColor).toUpperCase()}
-              onChange={(e) => handleBgColorChange(e.target.value)}
-              className="flex-1 font-mono"
-              placeholder="#FFFFFF"
-            />
-          </div>
-        </div>
-      )}
-
       <div className="space-y-2 pt-2 border-t">
         <Label className="text-xs text-gray-500">{t('controls.detectedColors')}</Label>
         <div className="flex items-center gap-4 text-xs">
@@ -430,6 +389,14 @@ export function TextControls() {
       </div>
 
       <div className="space-y-2 pt-4 border-t">
+        <Button
+          variant="destructive"
+          className="w-full"
+          onClick={handleDelete}
+        >
+          <Trash2 className="w-4 h-4 mr-2" />
+          {t('controls.deleteRegion')}
+        </Button>
         <Button
           variant="outline"
           className="w-full"

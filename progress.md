@@ -43,6 +43,35 @@
 - `lib/fabric-utils.ts`
   - 提供模型到 Canvas 的同步函数与背景框扩展规则。
 
+## 2026-04-01 cleanLayer 逻辑继续收敛
+
+本轮范围限定在：
+
+- 清理旧背景矩形 fallback 的运行时依赖
+- 明确最终渲染语义为 `cleanLayer + 文字框`
+- 保留最小必要的数据兼容，避免旧会话直接失效
+
+### 已完成
+
+- `components/editor/CanvasEditor.tsx`
+  - 移除运行时 `bgRect` 渲染与同步分支，画布不再额外绘制旧纯色背景矩形。
+  - 最终预览现在只依赖：
+    - 背景图：`cleanLayer`
+    - 前景：文字框
+  - 橡皮擦命中与 clean layer 重算链路保持不变，继续直接作用在 `cleanLayer patch`。
+
+- `lib/fabric-utils.ts`
+  - 删除 `createBackgroundRect()`、`syncBackgroundRect()` 和导出时隐藏 `bgRect` 的兼容逻辑。
+  - 导出逻辑收敛为直接以 `cleanLayer` 作为背景图导出。
+
+- `components/editor/Toolbar.tsx`
+  - 导出时不再传递 `hideBackgroundRects` 兼容参数。
+
+### 验证结果
+
+- 已执行：`npm run build`
+- 结果：待本轮提交后再次验证
+
 ### 验证结果
 
 - 已执行：`npm run build`
@@ -262,6 +291,126 @@
 
 这些仍是现有工程告警，不是本轮改动引入的构建失败。
 
+## 2026-04-01 橡皮擦切到 cleanLayer patch
+
+触发原因：
+
+- 旧实现里，橡皮擦本质上是在纯色背景矩形上挖洞，露出原图。
+- 主链路收敛为 `cleanLayer + 文字框` 后，这种做法已经不再正确。
+
+本轮范围限定在：
+
+- 橡皮擦命中检测不再依赖旧 `bgRect`
+- 橡皮擦笔迹不再清空 `cleanLayer`
+- 抬笔后直接把橡皮擦结果写回新的 `cleanLayer`
+
+### 已完成
+
+- `components/editor/CanvasEditor.tsx`
+  - 橡皮擦命中改为基于区域几何：
+    - `expandBoundingBox(sourceBounds)`
+    - 不再依赖运行时背景矩形对象
+  - 抬笔后会基于最新 `eraserPaths` 触发一次 `cleanLayer` 重算。
+
+- `store/editorStore.ts`
+  - `eraserPaths` 更新不再让 `cleanLayer` 直接失效。
+  - 避免绘制过程中背景瞬间退回原图。
+
+- `lib/clean-background.ts`
+  - clean worker 请求现在会携带每个区域的 `eraserPaths`。
+
+- `lib/clean-background.worker.ts`
+  - `local_fill` 完成后，会根据 `eraserPaths` 把对应笔刷圆形区域回退到原图像素。
+  - 这意味着橡皮擦现在真正作用于 `cleanLayer patch`，而不是旧的纯色遮盖层。
+
+### 当前行为
+
+- 进入橡皮擦模式后，用户仍然是在文字原区域附近刷。
+- 刷动过程中继续记录 `eraserPaths`。
+- 抬笔后刷新 `cleanLayer`：
+  - 未擦区域保留 clean 结果
+  - 擦过区域回退到原图像素
+
+### 验证结果
+
+- 已执行：`npm run build`
+- 结果：通过
+
+构建警告：
+
+- Next.js 推断 workspace root 时发现多个 `package-lock.json`
+- 本地 `@next/swc` 版本仍是 `15.5.7`，而 Next.js 是 `15.5.11`
+- `/api/ocr` 使用 edge runtime，因此对应页面不会走静态生成
+
+这些仍是现有工程告警，不是本轮改动引入的构建失败。
+
+## 2026-04-01 合成链路语义收敛
+
+触发原因：
+
+- 当前主链路已经变成 `cleanLayer + 文字框 = 最终合成图`。
+- 但 UI 里仍残留“背景显示/隐藏”和单区域背景色编辑，这些都属于旧的 `fill + eraser` 时代语义。
+- 这些旧入口会和 `cleanLayer` 打架，造成“点一下背景，干净层就失效”这类错误体验。
+
+本轮范围限定在：
+
+- 去掉用户可见的单区域背景开关
+- 去掉单区域背景色手动编辑入口
+- 让 `cleanLayer` 默认覆盖所有未删除文字区域
+
+### 已完成
+
+- `components/editor/Sidebar.tsx`
+  - 左侧列表移除“背景显示/隐藏”按钮。
+  - 仅保留：
+    - 删除误识别区域
+    - 显示/隐藏文字
+
+- `components/editor/TextControls.tsx`
+  - 右侧面板移除“背景显示/隐藏”控制。
+  - 移除单区域背景色手动编辑入口。
+  - 保留：
+    - 文字显隐
+    - 字体、字号、字重、对齐、颜色
+    - 删除误识别区域
+
+- `lib/clean-background.ts`
+  - 生成 `cleanLayer` 时不再依赖 `showBackground/bgMode` 旧开关。
+  - 所有未删除区域默认都参与 clean。
+
+- `store/editorStore.ts`
+  - `showBackground` 归一为内部恒真状态，不再作为主交互语义。
+  - `bgColor/bgMode` 不再导致 `cleanLayer` 失效，避免文字颜色重采样等操作误伤 clean 结果。
+  - 旧会话里残留的 `showBackground=false` 会被自动收敛回新逻辑。
+
+### 当前语义
+
+- 真实文字区域：
+  - 默认参与 `cleanLayer`
+  - 最终合成只看 `cleanLayer + 文字框`
+
+- 误识别区域：
+  - 直接删除
+  - 视作背景
+
+- 旧的矩形背景层：
+  - 仍作为内部 fallback 保留
+  - 主要服务于 `cleanLayer` 缺失或局部修边这类兼容路径
+  - 不再作为普通用户的主控制对象
+
+### 验证结果
+
+- 已执行：`npm run build`
+- 结果：通过
+
+构建警告：
+
+- Next.js 推断 workspace root 时发现多个 `package-lock.json`
+- 本地 `@next/swc` 版本仍是 `15.5.7`，而 Next.js 是 `15.5.11`
+- `/api/ocr` 使用 edge runtime，因此对应页面不会走静态生成
+
+这些仍是现有工程告警，不是本轮改动引入的构建失败。
+
 ### 当前仍未完成
 
 - 还没有“原始字体族识别”，默认仍然只能在候选字体里手动切换。
@@ -272,3 +421,177 @@
 
 - OCR 前仍然按文件体积压缩图片，再把坐标逆缩放回来；小字和细字的框精度仍会受这一层影响。
 - 如果原图真实字体和候选字体差异很大，即使同引擎拟合已经修好，视觉宽度和字面细节仍不可能完全一致。
+
+## 2026-04-01 第四阶段继续推进
+
+参考文档：`reference/image-editor-web-upgrade.md`
+
+本轮范围限定在：
+
+- 把背景修复从 `fill + eraser` 升级为正式 `cleanLayer`
+- 用浏览器 Worker 落地最小 `local_fill`
+- 让预览和导出都能正式消费 `cleanLayer`
+
+### 已完成
+
+- `lib/clean-background.ts`
+  - 新增前端 `generateCleanBackground()`，负责把当前页面模型里可清理区域提交给浏览器 Worker。
+  - 只基于 `showBackground !== false` 且 `bgMode !== none` 的区域生成 clean mask，避免无关区域被误清理。
+
+- `lib/clean-background.worker.ts`
+  - 新增浏览器 Worker，本地完成：
+    - 局部 crop
+    - polygon / rect mask 栅格化
+    - 邻域背景主色估计
+    - 基于 mask alpha 的 `local_fill`
+  - 输出整页 `cleanLayer` PNG，不走服务端。
+
+- `store/editorStore.ts`
+  - 新增 `previewMode` 与 `isCleaningBackground` 状态。
+  - `pageModel.cleanLayer` 现在有正式写入入口。
+  - 当用户修改会使 clean 结果失效的背景相关状态时，会自动清空旧 `cleanLayer`，避免继续拿过期干净层导出。
+
+- `components/editor/Toolbar.tsx`
+  - 新增“生成干净背景”动作。
+  - 新增预览模式切换：
+    - 原图
+    - 干净层
+    - 最终合成
+  - 导出 PNG 时会优先使用 `cleanLayer` 作为底图。
+
+- `components/editor/CanvasEditor.tsx`
+  - 画布底图会按当前预览模式在 `originalImage / cleanLayer` 之间切换。
+  - 当存在 `cleanLayer` 且处于最终合成视图时，会隐藏旧的矩形遮盖层，避免再次把结果变回色块盖字。
+
+- `lib/fabric-utils.ts`
+  - 导出逻辑升级为异步流程，支持临时替换底图并按需隐藏背景矩形，再恢复当前编辑画布状态。
+
+- `lib/i18n.ts`
+  - 补齐第四阶段新增操作的中英文文案。
+
+### 验证结果
+
+- 已执行：`npm run build`
+- 结果：通过
+
+构建警告：
+
+- Next.js 推断 workspace root 时发现多个 `package-lock.json`
+- 本地 `@next/swc` 版本仍是 `15.5.7`，而 Next.js 是 `15.5.11`
+- `/api/ocr` 使用 edge runtime，因此对应页面不会走静态生成
+
+这些仍是现有工程告警，不是第四阶段本轮改动引入的构建失败。
+
+### 当前仍未完成
+
+- `local_fill` 目前是“主背景色估计 + mask 平滑填充”的最小实现，还没有引入复杂度判断。
+- 当前 `cleanLayer` 生成后，如果继续做背景类手工修边，会直接使 `cleanLayer` 失效并回退到普通遮盖流程；还没有把手工修边直接写回 clean layer。
+- 复杂纹理、照片、表格线穿字等场景仍未接入 `remote inpaint` 或线条保护。
+
+### 现存风险
+
+- 目前没有 `edge_density / texture / color_std` 分流，复杂背景上仍可能生成“看起来更平，但不够真”的 clean 结果。
+- `cleanLayer` 作为 data URL 持久化到本地会话，图片很大时依然可能触发浏览器存储配额。
+
+## 2026-04-01 误识别区域删除重构
+
+触发原因：
+
+- OCR 会把部分“像文字的图案”误识别成文字区域。
+- 旧流程里，这类误识别通常依赖“隐藏文字 + 保留背景层”来处理。
+- 引入 `cleanLayer` 后，这条路径和新的背景链路语义开始打架，不再适合作为主方案。
+
+本轮范围限定在：
+
+- 把误识别区域改成“可删除，视作背景”
+- 删除后不再参与画布渲染、clean 生成和导出
+- 保留 `restoreAll` 作为整体恢复入口
+
+### 已完成
+
+- `types/canvas.ts`
+  - 区域模型新增 `removed` 字段，用于表达“该 OCR 区域被用户判定为误识别，应视作背景”。
+
+- `store/editorStore.ts`
+  - 新增 `deleteElement()`。
+  - 删除采用软删除而不是直接从会话里硬删：
+    - 区域仍保留在模型中
+    - 但会被标记为 `removed`
+    - 并立即使 `cleanLayer` 失效
+  - `restoreAll()` 会把已删除区域一并恢复，避免删错后只能重跑整张图。
+
+- `components/editor/CanvasEditor.tsx`
+  - 渲染层只消费未删除区域。
+  - 已删除区域不会再生成背景遮盖或文字框。
+
+- `lib/clean-background.ts`
+  - 生成 `cleanLayer` 时会跳过已删除区域。
+  - 这意味着误识别区域会被当作背景保留，而不是继续参与去字。
+
+- `components/editor/Sidebar.tsx`
+  - 左侧列表新增删除按钮，允许快速把误识别区域移出编辑链路。
+
+- `components/editor/TextControls.tsx`
+  - 右侧面板新增“删除此项”动作，并补充提示文案：
+    - 如果这是 OCR 误识别，直接删除即可，系统会把它当作背景处理。
+
+- `lib/i18n.ts`
+  - 补齐删除误识别区域的中英文文案。
+
+### 验证结果
+
+- 已执行：`npm run build`
+- 结果：通过
+
+构建警告：
+
+- Next.js 推断 workspace root 时发现多个 `package-lock.json`
+- 本地 `@next/swc` 版本仍是 `15.5.7`，而 Next.js 是 `15.5.11`
+- `/api/ocr` 使用 edge runtime，因此对应页面不会走静态生成
+
+这些仍是现有工程告警，不是本轮重构引入的构建失败。
+
+### 当前行为约束
+
+- 对真实文字区域，默认仍然是“干净背景 + 文字框”。
+- 对误识别区域，推荐动作不再是“隐藏文字 / 保留背景”，而是直接删除并视作背景。
+- 单项删除目前只支持通过 `restoreAll` 整体恢复，不支持单独撤销。
+
+## 2026-04-01 初始干净层自动生成
+
+触发原因：
+
+- 当前实现虽然已经有 `cleanLayer`，但首次上传后必须手动点击“生成干净背景”才会真正产出 clean layer。
+- 这会导致“最终合成图”和“已有干净层”语义不一致。
+
+本轮范围限定在：
+
+- OCR 初始化完成后自动生成初始 `cleanLayer`
+- “最终合成”默认直接消费该 `cleanLayer`
+- 工具栏按钮改成“重新生成干净背景”，只承担手动重算职责
+
+### 已完成
+
+- `components/editor/ImageUploader.tsx`
+  - OCR + 浏览器侧样式推断完成后，会立即触发一次初始 `cleanLayer` 生成。
+  - 初始 clean 生成成功后，默认预览仍停留在“最终合成”，不再切去单独的 clean 视图。
+
+- `components/editor/Toolbar.tsx`
+  - 原“生成干净背景”改成“重新生成干净背景”。
+  - 语义从“首次生成”改成“手动刷新当前 clean 结果”。
+
+- `lib/i18n.ts`
+  - 同步更新中英文文案。
+
+### 验证结果
+
+- 已执行：`npm run build`
+- 结果：通过
+
+构建警告：
+
+- Next.js 推断 workspace root 时发现多个 `package-lock.json`
+- 本地 `@next/swc` 版本仍是 `15.5.7`，而 Next.js 是 `15.5.11`
+- `/api/ocr` 使用 edge runtime，因此对应页面不会走静态生成
+
+这些仍是现有工程告警，不是本轮改动引入的构建失败。

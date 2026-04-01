@@ -15,6 +15,7 @@ export type TextAlign = 'left' | 'center' | 'right';
 export type FontWeight = 'normal' | 'bold';
 export type TextColorMode = 'auto' | 'manual';
 export type BackgroundMode = 'none' | 'fill' | 'manual' | 'inpaint';
+export type PreviewMode = 'original' | 'clean' | 'final';
 
 export interface TextElementSnapshot {
   bbox: OCRDetection['bounds'];
@@ -35,6 +36,7 @@ export interface TextElementSnapshot {
 
 export interface TextElement {
   id: number;
+  removed: boolean;
   sourceBounds: OCRDetection['bounds'];
   bbox: OCRDetection['bounds'];
   sourcePolygon?: [number, number][];

@@ -6,10 +6,18 @@ import { Upload } from 'lucide-react';
 import { useEditorStore } from '@/store/editorStore';
 import { detectText } from '@/lib/api-client';
 import { enhanceDetectionsWithStyles } from '@/lib/color-sampler';
+import { generateCleanBackground } from '@/lib/clean-background';
 import { useI18n } from '@/lib/i18n';
 
 export function ImageUploader() {
-  const { loadImage, initializeFromDetections, setIsDetecting } = useEditorStore();
+  const {
+    loadImage,
+    initializeFromDetections,
+    setIsDetecting,
+    setIsCleaningBackground,
+    setCleanLayer,
+    setPreviewMode,
+  } = useEditorStore();
   const { t } = useI18n();
 
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
@@ -46,13 +54,31 @@ export function ImageUploader() {
       console.log('Style inference complete');
 
       initializeFromDetections(enhancedDetections);
+      setIsCleaningBackground(true);
+      try {
+        const nextPageModel = useEditorStore.getState().pageModel;
+        if (!nextPageModel) {
+          throw new Error('Page model is missing after OCR initialization');
+        }
+
+        console.log('Generating initial clean background...');
+        const cleanLayer = await generateCleanBackground(imageUrl, nextPageModel);
+        setCleanLayer(cleanLayer);
+        setPreviewMode('final');
+      } catch (error) {
+        console.error('Failed to generate initial clean background:', error);
+        alert(`${t('toolbar.refreshCleanBackground')}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      } finally {
+        setIsCleaningBackground(false);
+      }
       setIsDetecting(false);
     } catch (error) {
       console.error('Failed to process image:', error);
       setIsDetecting(false);
+      setIsCleaningBackground(false);
       alert(`${t('uploader.failed')}: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
-  }, [initializeFromDetections, loadImage, setIsDetecting, t]);
+  }, [initializeFromDetections, loadImage, setCleanLayer, setIsCleaningBackground, setIsDetecting, setPreviewMode, t]);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,

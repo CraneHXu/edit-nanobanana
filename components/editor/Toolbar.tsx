@@ -2,11 +2,12 @@
 
 import React from 'react';
 import { Button } from '@/components/ui/button';
-import { Download, RotateCcw, Globe, RefreshCw, MousePointer, Eraser, Eye, ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
+import { Download, RotateCcw, Globe, RefreshCw, MousePointer, Eraser, Eye, ZoomIn, ZoomOut, Maximize2, Sparkles, Layers3 } from 'lucide-react';
 import { Slider } from '@/components/ui/slider';
 import { useEditorStore, EditorMode } from '@/store/editorStore';
 import { exportCanvasAsPNG } from '@/lib/fabric-utils';
 import { useI18n, Locale } from '@/lib/i18n';
+import { generateCleanBackground } from '@/lib/clean-background';
 import {
   Select,
   SelectContent,
@@ -22,8 +23,11 @@ export function Toolbar() {
     reset,
     restoreAll,
     originalImage,
+    pageModel,
     editorMode,
     setEditorMode,
+    previewMode,
+    setPreviewMode,
     eraserSize,
     setEraserSize,
     isComparing,
@@ -32,17 +36,44 @@ export function Toolbar() {
     zoomIn,
     zoomOut,
     resetZoom,
+    isCleaningBackground,
+    setIsCleaningBackground,
+    setCleanLayer,
   } = useEditorStore();
   const { t, locale, setLocale } = useI18n();
 
-  const handleExport = () => {
-    if (!canvas) {
+  const handleExport = async () => {
+    if (!canvas || !originalImage) {
       alert(t('toolbar.noImage'));
       return;
     }
 
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    exportCanvasAsPNG(canvas, canvasScale, `edited-${timestamp}.png`);
+    try {
+      await exportCanvasAsPNG(canvas, canvasScale, {
+        filename: `edited-${timestamp}.png`,
+        backgroundImageUrl: pageModel?.cleanLayer || originalImage,
+      });
+    } catch (error) {
+      alert(`${t('toolbar.exportFailed')}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  };
+
+  const handleRefreshCleanBackground = async () => {
+    if (!originalImage || !pageModel) {
+      return;
+    }
+
+    setIsCleaningBackground(true);
+    try {
+      const cleanLayer = await generateCleanBackground(originalImage, pageModel);
+      setCleanLayer(cleanLayer);
+      setPreviewMode('final');
+    } catch (error) {
+      alert(`${t('toolbar.refreshCleanBackground')}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setIsCleaningBackground(false);
+    }
   };
 
   const handleReset = () => {
@@ -104,6 +135,32 @@ export function Toolbar() {
                 <span className="text-xs text-gray-500 w-6">{eraserSize}</span>
               </div>
             )}
+
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                void handleRefreshCleanBackground();
+              }}
+              disabled={isCleaningBackground}
+            >
+              <Sparkles className="w-4 h-4 mr-1" />
+              {isCleaningBackground ? t('toolbar.refreshingCleanBackground') : t('toolbar.refreshCleanBackground')}
+            </Button>
+
+            <div className="flex items-center gap-2">
+              <Layers3 className="w-4 h-4 text-gray-500" />
+              <Select value={previewMode} onValueChange={(value) => setPreviewMode(value as typeof previewMode)}>
+                <SelectTrigger className="w-36">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="original">{t('toolbar.previewOriginal')}</SelectItem>
+                  <SelectItem value="clean" disabled={!pageModel?.cleanLayer}>{t('toolbar.previewClean')}</SelectItem>
+                  <SelectItem value="final">{t('toolbar.previewFinal')}</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
 
             {/* Compare Button */}
             <Button
@@ -184,7 +241,9 @@ export function Toolbar() {
           {t('toolbar.startOver')}
         </Button>
         <Button
-          onClick={handleExport}
+          onClick={() => {
+            void handleExport();
+          }}
           disabled={!canvas}
         >
           <Download className="w-4 h-4 mr-2" />

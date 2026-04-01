@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { useEditorStore } from '@/store/editorStore';
 import { ImageUploader } from '@/components/editor/ImageUploader';
 import { CanvasEditor } from '@/components/editor/CanvasEditor';
@@ -8,16 +8,24 @@ import { TextControls } from '@/components/editor/TextControls';
 import { Toolbar } from '@/components/editor/Toolbar';
 import { Sidebar } from '@/components/editor/Sidebar';
 import { preloadCommonFonts } from '@/lib/font-loader';
+import { generateCleanBackground } from '@/lib/clean-background';
 
 const SESSION_STORAGE_KEY = 'image-editor-web-session-v2';
 
 export default function Home() {
   const {
     originalImage,
+    imageFile,
+    pageModel,
+    isCleaningBackground,
     sessionHydrated,
     hydrateSession,
     markSessionHydrated,
+    setIsCleaningBackground,
+    setCleanLayer,
+    setPreviewMode,
   } = useEditorStore();
+  const didBackfillHydratedCleanLayerRef = useRef(false);
 
   useEffect(() => {
     preloadCommonFonts();
@@ -66,6 +74,42 @@ export default function Home() {
 
     return unsubscribe;
   }, [sessionHydrated]);
+
+  useEffect(() => {
+    if (!sessionHydrated || imageFile !== null) {
+      return;
+    }
+    if (didBackfillHydratedCleanLayerRef.current) {
+      return;
+    }
+    if (!originalImage || !pageModel || pageModel.cleanLayer || isCleaningBackground) {
+      return;
+    }
+
+    didBackfillHydratedCleanLayerRef.current = true;
+    setIsCleaningBackground(true);
+
+    void generateCleanBackground(originalImage, pageModel)
+      .then((cleanLayer) => {
+        setCleanLayer(cleanLayer);
+        setPreviewMode('final');
+      })
+      .catch((error) => {
+        console.error('Failed to backfill clean layer for hydrated session:', error);
+      })
+      .finally(() => {
+        setIsCleaningBackground(false);
+      });
+  }, [
+    imageFile,
+    isCleaningBackground,
+    originalImage,
+    pageModel,
+    sessionHydrated,
+    setCleanLayer,
+    setIsCleaningBackground,
+    setPreviewMode,
+  ]);
 
   return (
     <div className="h-screen flex flex-col">

@@ -5,7 +5,7 @@
 import { BoundingBox, RGBColor } from '@/types/ocr';
 import { shouldUseTextbox, TEXTBOX_LINE_HEIGHT } from '@/lib/text-layout';
 import type { TextElement } from '@/types/canvas';
-import type { Canvas, IText, Rect, Textbox } from 'fabric';
+import type { Canvas, IText, Textbox } from 'fabric';
 
 export const BACKGROUND_EXPAND_FACTOR = 0.1;
 
@@ -126,20 +126,6 @@ export function createTextObject(
   return textObj;
 }
 
-export function createBackgroundRect(
-  fabric: typeof import('fabric'),
-  region: TextElement,
-  scale: number,
-): Rect {
-  const rect = new fabric.Rect({
-    selectable: false,
-    evented: false,
-  });
-
-  syncBackgroundRect(rect, region, scale);
-  return rect;
-}
-
 export function syncTextObject(textObj: FabricTextObject, region: TextElement, scale: number): void {
   const bounds = scaleBoundingBox(region.bbox, scale);
   const anchor = getTextAnchorPoint(region, scale);
@@ -174,42 +160,61 @@ export function syncTextObject(textObj: FabricTextObject, region: TextElement, s
   refreshTextboxLayout(textObj);
 }
 
-export function syncBackgroundRect(rect: Rect, region: TextElement, scale: number): void {
-  const fillColor = region.bgColor ?? { r: 255, g: 255, b: 255 };
-  const bounds = scaleBoundingBox(expandBoundingBox(region.sourceBounds), scale);
-
-  rect.set({
-    left: bounds.x,
-    top: bounds.y,
-    width: Math.max(1, bounds.width),
-    height: Math.max(1, bounds.height),
-    fill: rgbToString(fillColor),
-    visible: region.showBackground,
-  });
-  rect.setCoords();
+interface ExportCanvasOptions {
+  filename?: string;
+  backgroundImageUrl?: string | null;
 }
 
-export function exportCanvasAsPNG(
+async function loadBackgroundImage(imageUrl: string, scale: number): Promise<any> {
+  const fabric = await import('fabric');
+  const image = await fabric.FabricImage.fromURL(imageUrl);
+  image.set({
+    scaleX: scale,
+    scaleY: scale,
+    left: 0,
+    top: 0,
+  });
+  return image;
+}
+
+export async function exportCanvasAsPNG(
   canvas: Canvas,
   scale: number = 1,
-  filename: string = 'edited-image.png'
-): void {
+  options: ExportCanvasOptions = {},
+): Promise<void> {
   if (!canvas) {
     throw new Error('Canvas is not initialized');
   }
 
+  const {
+    filename = 'edited-image.png',
+    backgroundImageUrl = null,
+  } = options;
+
   const multiplier = scale > 0 ? 1 / scale : 1;
+  const originalBackgroundImage = canvas.backgroundImage;
 
-  const dataURL = canvas.toDataURL({
-    format: 'png',
-    quality: 1,
-    multiplier: multiplier,
-  });
+  try {
+    if (backgroundImageUrl) {
+      canvas.backgroundImage = await loadBackgroundImage(backgroundImageUrl, scale);
+    }
 
-  const link = document.createElement('a');
-  link.download = filename;
-  link.href = dataURL;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
+    canvas.renderAll();
+
+    const dataURL = canvas.toDataURL({
+      format: 'png',
+      quality: 1,
+      multiplier,
+    });
+
+    const link = document.createElement('a');
+    link.download = filename;
+    link.href = dataURL;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  } finally {
+    canvas.backgroundImage = originalBackgroundImage;
+    canvas.renderAll();
+  }
 }

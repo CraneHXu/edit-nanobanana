@@ -1,17 +1,17 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import type { Canvas as FabricCanvas, Rect } from 'fabric';
+import type { Canvas as FabricCanvas } from 'fabric';
 import { loadGoogleFont } from '@/lib/font-loader';
+import { generateCleanBackground } from '@/lib/clean-background';
 import { useEditorStore } from '@/store/editorStore';
-import type { EraserPath, TextElement } from '@/types/canvas';
+import type { EraserPath } from '@/types/canvas';
 import {
-  createBackgroundRect,
   createTextObject,
+  expandBoundingBox,
   FabricTextObject,
   projectLocalOffset,
-  rgbToString,
-  syncBackgroundRect,
+  scaleBoundingBox,
   syncTextObject,
 } from '@/lib/fabric-utils';
 
@@ -19,7 +19,6 @@ const DEFAULT_FONT = 'Noto Sans SC';
 
 type RuntimeBinding = {
   textObj: FabricTextObject;
-  bgRect?: Rect;
 };
 
 let fabricModule: typeof import('fabric') | null = null;
@@ -70,6 +69,7 @@ export function CanvasEditor() {
   const suppressCanvasWritebackRef = useRef(false);
   const pageModelRef = useRef(useEditorStore.getState().pageModel);
   const eraserSizeRef = useRef(useEditorStore.getState().eraserSize);
+  const eraserMutatedRef = useRef(false);
   const [fabricReady, setFabricReady] = useState(false);
   const [fontLoaded, setFontLoaded] = useState(false);
   const [cursorPos, setCursorPos] = useState<{ x: number; y: number } | null>(null);
@@ -80,12 +80,15 @@ export function CanvasEditor() {
     pageModel,
     setCanvas,
     setCanvasScale,
+    setCleanLayer,
+    setIsCleaningBackground,
     setSelectedElement,
     updateElement,
     isDetecting,
     editorMode,
     eraserSize,
     isComparing,
+    previewMode,
     viewportZoom,
     setViewportZoom,
   } = useEditorStore();
@@ -148,7 +151,17 @@ export function CanvasEditor() {
     const currentCanvas = fabricCanvasRef.current;
     if (!isCanvasValid(currentCanvas)) return;
 
-    fabricModule.FabricImage.fromURL(originalImage)
+    const backgroundSource = (() => {
+      if (isComparing) {
+        return originalImage;
+      }
+      if (previewMode === 'clean' || previewMode === 'final') {
+        return pageModel?.cleanLayer || originalImage;
+      }
+      return originalImage;
+    })();
+
+    fabricModule.FabricImage.fromURL(backgroundSource)
       .then((img) => {
         if (!isCanvasValid(fabricCanvasRef.current)) return;
 
@@ -184,48 +197,7 @@ export function CanvasEditor() {
       .catch((error) => {
         console.error('Failed to load background image:', error);
       });
-  }, [fabricReady, originalImage, setCanvasScale]);
-
-  const applyEraserPaths = useCallback((rect: Rect, paths: EraserPath[], bgColor: TextElement['bgColor']) => {
-    if (!fabricModule) return;
-
-    const currentCanvas = fabricCanvasRef.current;
-    if (!isCanvasValid(currentCanvas)) return;
-
-    const fillColor = bgColor ?? { r: 255, g: 255, b: 255 };
-    if (!paths.length) {
-      rect.set({ fill: rgbToString(fillColor) });
-      rect.dirty = true;
-      return;
-    }
-
-    const rectWidth = Math.max(1, Math.round(rect.width || 0));
-    const rectHeight = Math.max(1, Math.round(rect.height || 0));
-    const scale = imageScaleRef.current || 1;
-    const offCanvas = document.createElement('canvas');
-    offCanvas.width = rectWidth;
-    offCanvas.height = rectHeight;
-    const ctx = offCanvas.getContext('2d');
-    if (!ctx) return;
-
-    ctx.fillStyle = rgbToString(fillColor);
-    ctx.fillRect(0, 0, rectWidth, rectHeight);
-    ctx.globalCompositeOperation = 'destination-out';
-
-    paths.forEach((path) => {
-      ctx.beginPath();
-      ctx.arc(path.x * scale, path.y * scale, path.radius * scale, 0, Math.PI * 2);
-      ctx.fill();
-    });
-
-    rect.set({
-      fill: new fabricModule.Pattern({
-        source: offCanvas,
-        repeat: 'no-repeat',
-      }),
-    });
-    rect.dirty = true;
-  }, []);
+  }, [fabricReady, isComparing, originalImage, pageModel?.cleanLayer, previewMode, setCanvasScale]);
 
   const commitTextboxToModel = useCallback((elementId: number) => {
     if (suppressCanvasWritebackRef.current) return;
@@ -259,20 +231,37 @@ export function CanvasEditor() {
     });
   }, [updateElement]);
 
+  const refreshCleanLayerFromStore = useCallback(async () => {
+    const state = useEditorStore.getState();
+    if (!state.originalImage || !state.pageModel) {
+      return;
+    }
+
+    setIsCleaningBackground(true);
+    try {
+      const cleanLayer = await generateCleanBackground(state.originalImage, state.pageModel);
+      setCleanLayer(cleanLayer);
+    } catch (error) {
+      console.error('Failed to refresh clean background after eraser edit:', error);
+    } finally {
+      setIsCleaningBackground(false);
+    }
+  }, [setCleanLayer, setIsCleaningBackground]);
+
   useEffect(() => {
     if (!fabricReady || !fabricModule || !fontLoaded) return;
 
     const currentCanvas = fabricCanvasRef.current;
     if (!isCanvasValid(currentCanvas)) return;
 
-    const regions = pageModel?.regions ?? [];
+    const regions = (pageModel?.regions ?? []).filter((region) => !region.removed);
     const activeIds = new Set(regions.map((region) => region.id));
+    const shouldShowComposite = !isComparing && previewMode === 'final';
 
     suppressCanvasWritebackRef.current = true;
     try {
       for (const [id, binding] of runtimeBindingsRef.current.entries()) {
         if (activeIds.has(id)) continue;
-        if (binding.bgRect) currentCanvas.remove(binding.bgRect);
         currentCanvas.remove(binding.textObj);
         runtimeBindingsRef.current.delete(id);
       }
@@ -289,19 +278,7 @@ export function CanvasEditor() {
         }
 
         syncTextObject(binding.textObj, region, imageScaleRef.current);
-
-        if (region.showBackground) {
-          if (!binding.bgRect) {
-            binding.bgRect = createBackgroundRect(fabricModule, region, imageScaleRef.current);
-            currentCanvas.add(binding.bgRect);
-          }
-          syncBackgroundRect(binding.bgRect, region, imageScaleRef.current);
-          applyEraserPaths(binding.bgRect, region.eraserPaths, region.bgColor);
-          currentCanvas.sendObjectToBack(binding.bgRect);
-        } else if (binding.bgRect) {
-          currentCanvas.remove(binding.bgRect);
-          binding.bgRect = undefined;
-        }
+        binding.textObj.set('visible', shouldShowComposite && region.showText);
 
         (currentCanvas as any).bringObjectToFront?.(binding.textObj);
       }
@@ -310,7 +287,7 @@ export function CanvasEditor() {
     }
 
     currentCanvas.renderAll();
-  }, [applyEraserPaths, commitTextboxToModel, fabricReady, fontLoaded, pageModel]);
+  }, [commitTextboxToModel, fabricReady, fontLoaded, isComparing, pageModel, previewMode]);
 
   useEffect(() => {
     const currentCanvas = fabricCanvasRef.current;
@@ -329,17 +306,18 @@ export function CanvasEditor() {
       currentCanvas.hoverCursor = 'none';
 
       const findElementAtPointer = (pointer: { x: number; y: number }) => {
-        for (const [id, binding] of runtimeBindingsRef.current.entries()) {
-          if (!binding.bgRect) continue;
+        const regions = pageModelRef.current?.regions.filter((region) => !region.removed) ?? [];
+        const scale = imageScaleRef.current || 1;
 
-          const rect = binding.bgRect;
-          const left = rect.left || 0;
-          const top = rect.top || 0;
-          const right = left + rect.getScaledWidth();
-          const bottom = top + rect.getScaledHeight();
+        for (const region of regions) {
+          const expandedBounds = scaleBoundingBox(expandBoundingBox(region.sourceBounds), scale);
+          const left = expandedBounds.x;
+          const top = expandedBounds.y;
+          const right = left + expandedBounds.width;
+          const bottom = top + expandedBounds.height;
 
           if (pointer.x >= left && pointer.x <= right && pointer.y >= top && pointer.y <= bottom) {
-            return { id, rect };
+            return { id: region.id, bounds: expandedBounds };
           }
         }
 
@@ -355,11 +333,12 @@ export function CanvasEditor() {
 
         const scale = imageScaleRef.current || 1;
         const newPath: EraserPath = {
-          x: roundToImagePixel((pointer.x - (found.rect.left || 0)) / scale),
-          y: roundToImagePixel((pointer.y - (found.rect.top || 0)) / scale),
+          x: roundToImagePixel((pointer.x - found.bounds.x) / scale),
+          y: roundToImagePixel((pointer.y - found.bounds.y) / scale),
           radius: roundToImagePixel((eraserSizeRef.current / 2) / scale),
         };
 
+        eraserMutatedRef.current = true;
         updateElement(found.id, {
           eraserPaths: [...region.eraserPaths, newPath],
         });
@@ -382,6 +361,10 @@ export function CanvasEditor() {
 
       const handleMouseUp = () => {
         isDrawingRef.current = false;
+        if (eraserMutatedRef.current) {
+          eraserMutatedRef.current = false;
+          void refreshCleanLayerFromStore();
+        }
       };
 
       const handleMouseOut = () => {
@@ -423,7 +406,7 @@ export function CanvasEditor() {
     currentCanvas.defaultCursor = 'default';
     currentCanvas.hoverCursor = 'move';
     setCursorPos(null);
-  }, [editorMode, updateElement]);
+  }, [editorMode, refreshCleanLayerFromStore, updateElement]);
 
   useEffect(() => {
     if (!fabricReady) return;
@@ -452,23 +435,6 @@ export function CanvasEditor() {
       fabricCanvasRef.current.off('selection:cleared', handleClear);
     };
   }, [fabricReady, setSelectedElement]);
-
-  useEffect(() => {
-    const currentCanvas = fabricCanvasRef.current;
-    if (!isCanvasValid(currentCanvas)) return;
-
-    currentCanvas.getObjects().forEach((obj: any) => {
-      if (isComparing) {
-        obj._wasVisible = obj.visible;
-        obj.visible = false;
-      } else if (obj._wasVisible !== undefined) {
-        obj.visible = obj._wasVisible;
-        delete obj._wasVisible;
-      }
-    });
-
-    currentCanvas.renderAll();
-  }, [isComparing]);
 
   useEffect(() => {
     const container = containerRef.current;

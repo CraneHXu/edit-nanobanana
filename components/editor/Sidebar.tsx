@@ -1,7 +1,7 @@
 "use client";
 
 import React from 'react';
-import { Eye, EyeOff, Square } from 'lucide-react';
+import { Eye, EyeOff, Trash2 } from 'lucide-react';
 import { useEditorStore } from '@/store/editorStore';
 import { useI18n } from '@/lib/i18n';
 
@@ -10,13 +10,13 @@ export function Sidebar() {
     pageModel,
     selectedElementId,
     setSelectedElement,
-    toggleShowBackground,
+    deleteElement,
     toggleShowText,
     canvas,
   } = useEditorStore();
   const { t } = useI18n();
 
-  const elements = pageModel?.regions ?? [];
+  const elements = (pageModel?.regions ?? []).filter((element) => !element.removed);
 
   const handleSelectElement = (id: number) => {
     setSelectedElement(id);
@@ -33,14 +33,14 @@ export function Sidebar() {
     }
   };
 
-  const handleToggleBackground = (e: React.MouseEvent, id: number) => {
-    e.stopPropagation();
-    toggleShowBackground(id);
-  };
-
   const handleToggleText = (e: React.MouseEvent, id: number) => {
     e.stopPropagation();
     toggleShowText(id);
+  };
+
+  const handleDelete = (e: React.MouseEvent, id: number) => {
+    e.stopPropagation();
+    deleteElement(id);
   };
 
   if (elements.length === 0) {
@@ -74,18 +74,17 @@ export function Sidebar() {
           >
             <div className="flex gap-1 flex-shrink-0">
               <button
-                onClick={(e) => handleToggleBackground(e, element.id)}
+                onClick={(e) => handleDelete(e, element.id)}
                 className={`
                   p-1 rounded transition-colors
                   ${selectedElementId === element.id
                     ? 'hover:bg-primary-foreground/20'
-                    : 'hover:bg-gray-300'
+                    : 'hover:bg-red-100 text-red-600'
                   }
-                  ${element.showBackground ? 'opacity-100' : 'opacity-40'}
                 `}
-                title={t('controls.showBackground')}
+                title={t('controls.deleteRegion')}
               >
-                <Square className="w-3.5 h-3.5" />
+                <Trash2 className="w-3.5 h-3.5" />
               </button>
               <button
                 onClick={(e) => handleToggleText(e, element.id)}
