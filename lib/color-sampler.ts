@@ -4,9 +4,9 @@
  */
 
 import { loadGoogleFont } from '@/lib/font-loader';
-import { fitFontSizeToBox } from '@/lib/text-layout';
+import { fitTextLayoutToBox } from '@/lib/text-layout';
 import type { FontWeight, TextAlign } from '@/types/canvas';
-import { OCRDetection, RGBColor } from '@/types/ocr';
+import { BoundingBox, OCRDetection, RGBColor } from '@/types/ocr';
 
 const DEFAULT_FONT_FAMILY = 'Noto Sans SC';
 const DEFAULT_FONT_WEIGHT: FontWeight = 'normal';
@@ -71,9 +71,11 @@ export async function enhanceDetectionsWithStyles(
   const context = await createStyleInferenceContext(imageUrl);
   await loadGoogleFont(DEFAULT_FONT_FAMILY);
 
-  return detections.map((detection) => {
+  return Promise.all(detections.map(async (detection) => {
     const sampledStyle = inferRegionStyleFromContext(context, detection);
     const fontWeight = sampledStyle.fontWeight;
+    const renderBounds = deriveRenderBounds(detection.bbox, detection.bounds);
+    const layout = await fitTextLayoutToBox(detection.text, renderBounds, DEFAULT_FONT_FAMILY, fontWeight);
 
     return {
       ...detection,
@@ -81,11 +83,11 @@ export async function enhanceDetectionsWithStyles(
       textColor: sampledStyle.textColorRaw,
       textColorRaw: sampledStyle.textColorRaw,
       textColorQuantized: sampledStyle.textColorQuantized,
-      fontSize: fitFontSizeToBox(detection.text, detection.bounds, DEFAULT_FONT_FAMILY, fontWeight),
+      fontSize: layout.fontSize,
       fontWeight,
       textAlign: sampledStyle.textAlign,
     };
-  });
+  }));
 }
 
 export async function sampleRegionStyle(
@@ -146,6 +148,30 @@ function inferRegionStyleFromContext(
     textColorQuantized: colorAnalysis.quantizedColor,
     fontWeight: target.fontWeight ?? DEFAULT_FONT_WEIGHT,
     textAlign: target.textAlign ?? DEFAULT_TEXT_ALIGN,
+  };
+}
+
+function deriveRenderBounds(
+  polygon: [number, number][],
+  fallbackBounds: BoundingBox,
+): BoundingBox {
+  if (!polygon || polygon.length < 4) {
+    return fallbackBounds;
+  }
+
+  const [p0, p1, , p3] = polygon;
+  const width = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]);
+  const height = Math.hypot(p3[0] - p0[0], p3[1] - p0[1]);
+
+  if (width < 1 || height < 1) {
+    return fallbackBounds;
+  }
+
+  return {
+    x: p0[0],
+    y: p0[1],
+    width,
+    height,
   };
 }
 

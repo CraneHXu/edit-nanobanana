@@ -3,8 +3,8 @@
  */
 
 import { create } from 'zustand';
-import { fitFontSizeToBox } from '@/lib/text-layout';
-import { OCRDetection } from '@/types/ocr';
+import { estimateFontSizeToBox } from '@/lib/text-layout';
+import { BoundingBox, OCRDetection } from '@/types/ocr';
 import { PageModel, TextElement } from '@/types/canvas';
 
 export type EditorMode = 'select' | 'eraser';
@@ -79,6 +79,7 @@ function buildOriginalSnapshot(region: Omit<TextElement, 'original'>): TextEleme
     text: region.text,
     fontFamily: region.fontFamily,
     fontSize: region.fontSize,
+    layoutOffsetY: region.layoutOffsetY,
     fontWeight: region.fontWeight,
     textAlign: region.textAlign,
     fontColor: { ...region.fontColor },
@@ -91,16 +92,72 @@ function buildOriginalSnapshot(region: Omit<TextElement, 'original'>): TextEleme
   };
 }
 
+function cloneBounds(bounds: BoundingBox): BoundingBox {
+  return {
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+  };
+}
+
+function clonePolygon(polygon?: [number, number][]): [number, number][] | undefined {
+  return polygon?.map(([x, y]) => [x, y] as [number, number]);
+}
+
+function distanceBetween(a: [number, number], b: [number, number]): number {
+  return Math.hypot(b[0] - a[0], b[1] - a[1]);
+}
+
+function deriveRenderGeometry(
+  polygon: [number, number][] | undefined,
+  fallbackBounds: BoundingBox,
+): { bbox: BoundingBox; rotation: number } {
+  if (!polygon || polygon.length < 4) {
+    return {
+      bbox: cloneBounds(fallbackBounds),
+      rotation: 0,
+    };
+  }
+
+  const [p0, p1, , p3] = polygon;
+  const width = distanceBetween(p0, p1);
+  const height = distanceBetween(p0, p3);
+
+  if (width < 1 || height < 1) {
+    return {
+      bbox: cloneBounds(fallbackBounds),
+      rotation: 0,
+    };
+  }
+
+  return {
+    bbox: {
+      x: p0[0],
+      y: p0[1],
+      width,
+      height,
+    },
+    rotation: Math.atan2(p1[1] - p0[1], p1[0] - p0[0]) * (180 / Math.PI),
+  };
+}
+
 function createTextElement(detection: OCRDetection): TextElement {
+  const sourcePolygon = clonePolygon(detection.bbox.map(([x, y]) => [x, y] as [number, number]));
+  const sourceBounds = cloneBounds(detection.bounds);
+  const geometry = deriveRenderGeometry(sourcePolygon, sourceBounds);
   const fontWeight = detection.fontWeight ?? 'normal';
-  const fontSize = detection.fontSize ?? fitFontSizeToBox(detection.text, detection.bounds, 'Noto Sans SC', fontWeight);
+  const fontSize = detection.fontSize ?? estimateFontSizeToBox(detection.text, geometry.bbox, 'Noto Sans SC', fontWeight);
   const textColorRaw = detection.textColorRaw ?? detection.textColor;
   const textColorQuantized = detection.textColorQuantized ?? detection.textColor;
 
   const base: Omit<TextElement, 'original'> = {
     id: detection.index,
-    bbox: { ...detection.bounds },
-    polygon: detection.bbox.map(([x, y]) => [x, y] as [number, number]),
+    sourceBounds,
+    bbox: geometry.bbox,
+    sourcePolygon,
+    rotation: geometry.rotation,
+    layoutOffsetY: 0,
     text: detection.text,
     confidence: detection.confidence,
     fontFamily: 'Noto Sans SC',
@@ -121,6 +178,64 @@ function createTextElement(detection: OCRDetection): TextElement {
   return {
     ...base,
     original: buildOriginalSnapshot(base),
+  };
+}
+
+function normalizeTextElement(region: any): TextElement {
+  const sourcePolygon = clonePolygon(region.sourcePolygon ?? region.polygon);
+  const sourceBounds = cloneBounds(region.sourceBounds ?? region.original?.bbox ?? region.bbox);
+  const geometry = deriveRenderGeometry(sourcePolygon, sourceBounds);
+  const bbox = cloneBounds(region.bbox ?? geometry.bbox);
+  const fontWeight = region.fontWeight === 'bold' ? 'bold' : 'normal';
+  const textAlign = region.textAlign === 'center' || region.textAlign === 'right' ? region.textAlign : 'left';
+  const fontSize = typeof region.fontSize === 'number'
+    ? region.fontSize
+    : estimateFontSizeToBox(String(region.text || ''), bbox, region.fontFamily || 'Noto Sans SC', fontWeight);
+
+  const normalized: Omit<TextElement, 'original'> = {
+    id: region.id,
+    sourceBounds,
+    bbox,
+    sourcePolygon,
+    rotation: typeof region.rotation === 'number' ? region.rotation : geometry.rotation,
+    layoutOffsetY: typeof region.layoutOffsetY === 'number' ? region.layoutOffsetY : 0,
+    text: String(region.text || ''),
+    confidence: typeof region.confidence === 'number' ? region.confidence : 0,
+    fontFamily: region.fontFamily || 'Noto Sans SC',
+    fontSize,
+    fontWeight,
+    textAlign,
+    fontColor: region.fontColor ?? { r: 0, g: 0, b: 0 },
+    textColorRaw: region.textColorRaw ?? region.fontColor ?? { r: 0, g: 0, b: 0 },
+    textColorMode: region.textColorMode === 'manual' ? 'manual' : 'auto',
+    textColorQuantized: region.textColorQuantized ?? region.textColorRaw ?? region.fontColor ?? { r: 0, g: 0, b: 0 },
+    bgColor: region.bgColor ?? { r: 255, g: 255, b: 255 },
+    bgMode: region.bgMode === 'manual' || region.bgMode === 'none' || region.bgMode === 'inpaint' ? region.bgMode : 'fill',
+    showBackground: region.showBackground !== false,
+    showText: region.showText !== false,
+    eraserPaths: Array.isArray(region.eraserPaths) ? region.eraserPaths : [],
+  };
+
+  return {
+    ...normalized,
+    original: region.original
+      ? {
+          ...buildOriginalSnapshot(normalized),
+          ...region.original,
+          bbox: cloneBounds(region.original.bbox ?? normalized.bbox),
+          layoutOffsetY: typeof region.original.layoutOffsetY === 'number' ? region.original.layoutOffsetY : normalized.layoutOffsetY,
+          fontColor: region.original.fontColor ?? normalized.fontColor,
+          textColorRaw: region.original.textColorRaw ?? normalized.textColorRaw,
+          bgColor: region.original.bgColor ?? normalized.bgColor,
+        }
+      : buildOriginalSnapshot(normalized),
+  };
+}
+
+function normalizePageModel(pageModel: PageModel): PageModel {
+  return {
+    ...pageModel,
+    regions: Array.isArray(pageModel.regions) ? pageModel.regions.map(normalizeTextElement) : [],
   };
 }
 
@@ -185,12 +300,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   hydrateSession: ({ originalImage, imageMeta, pageModel }) => {
+    const normalizedPageModel = normalizePageModel(pageModel);
     set({
       originalImage,
       imageMeta,
       imageFile: null,
-      pageModel,
-      selectedElementId: pageModel.regions[0]?.id ?? null,
+      pageModel: normalizedPageModel,
+      selectedElementId: normalizedPageModel.regions[0]?.id ?? null,
       sessionHydrated: true,
     });
   },
@@ -277,6 +393,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           ...region,
           ...region.original,
           bbox: { ...region.original.bbox },
+          layoutOffsetY: region.original.layoutOffsetY,
           fontColor: { ...region.original.fontColor },
           textColorRaw: { ...region.original.textColorRaw },
           bgColor: region.original.bgColor ? { ...region.original.bgColor } : null,
@@ -297,6 +414,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           ...region,
           ...region.original,
           bbox: { ...region.original.bbox },
+          layoutOffsetY: region.original.layoutOffsetY,
           fontColor: { ...region.original.fontColor },
           textColorRaw: { ...region.original.textColorRaw },
           bgColor: region.original.bgColor ? { ...region.original.bgColor } : null,

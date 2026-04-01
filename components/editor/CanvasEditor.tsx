@@ -1,13 +1,15 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import type { Canvas as FabricCanvas, Rect, Textbox } from 'fabric';
+import type { Canvas as FabricCanvas, Rect } from 'fabric';
 import { loadGoogleFont } from '@/lib/font-loader';
 import { useEditorStore } from '@/store/editorStore';
 import type { EraserPath, TextElement } from '@/types/canvas';
 import {
   createBackgroundRect,
   createTextObject,
+  FabricTextObject,
+  projectLocalOffset,
   rgbToString,
   syncBackgroundRect,
   syncTextObject,
@@ -16,7 +18,7 @@ import {
 const DEFAULT_FONT = 'Noto Sans SC';
 
 type RuntimeBinding = {
-  textObj: Textbox;
+  textObj: FabricTextObject;
   bgRect?: Rect;
 };
 
@@ -230,20 +232,30 @@ export function CanvasEditor() {
 
     const binding = runtimeBindingsRef.current.get(elementId);
     if (!binding) return;
+    const region = pageModelRef.current?.regions.find((item) => item.id === elementId);
+    if (!region) return;
 
     const scale = imageScaleRef.current || 1;
     const { textObj } = binding;
+    const angle = typeof textObj.angle === 'number' ? textObj.angle : region.rotation;
+    const scaledOffset = projectLocalOffset(0, region.layoutOffsetY * scale, angle);
+    const nextScaleX = textObj.scaleX || 1;
+    const nextScaleY = textObj.scaleY || 1;
+    const baseWidth = Number(textObj.width || textObj.getScaledWidth() || 0);
+    const baseHeight = Number(textObj.height || textObj.getScaledHeight() || 0);
     const nextBbox = {
-      x: roundToImagePixel((textObj.left || 0) / scale),
-      y: roundToImagePixel((textObj.top || 0) / scale),
-      width: roundToImagePixel(textObj.getScaledWidth() / scale),
-      height: roundToImagePixel(textObj.getScaledHeight() / scale),
+      x: roundToImagePixel(((textObj.left || 0) - scaledOffset.x) / scale),
+      y: roundToImagePixel(((textObj.top || 0) - scaledOffset.y) / scale),
+      width: roundToImagePixel((baseWidth * nextScaleX) / scale),
+      height: roundToImagePixel((((region.layoutOffsetY * scale) + (baseHeight * nextScaleY)) / scale)),
     };
 
     updateElement(elementId, {
       text: textObj.text ?? '',
       bbox: nextBbox,
-      fontSize: Math.max(1, roundToImagePixel(((textObj.fontSize || 0) * (textObj.scaleY || 1)) / scale)),
+      fontSize: Math.max(1, roundToImagePixel(((textObj.fontSize || 0) * nextScaleY) / scale)),
+      rotation: angle,
+      layoutOffsetY: roundToImagePixel((region.layoutOffsetY * nextScaleY)),
     });
   }, [updateElement]);
 

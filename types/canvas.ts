@@ -21,6 +21,7 @@ export interface TextElementSnapshot {
   text: string;
   fontFamily: string;
   fontSize: number;
+  layoutOffsetY: number;
   fontWeight: FontWeight;
   textAlign: TextAlign;
   fontColor: RGBColor;
@@ -34,8 +35,11 @@ export interface TextElementSnapshot {
 
 export interface TextElement {
   id: number;
+  sourceBounds: OCRDetection['bounds'];
   bbox: OCRDetection['bounds'];
-  polygon?: [number, number][];
+  sourcePolygon?: [number, number][];
+  rotation: number;
+  layoutOffsetY: number;
   text: string;
   confidence: number;
   fontFamily: string;

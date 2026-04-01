@@ -9,20 +9,16 @@ import { DetectionResponse } from '@/types/ocr';
 // Use relative paths for API routes (works on Vercel and locally)
 const API_BASE_URL = '';
 
-// Compress to 1MB to speed up OCR processing (smaller = faster)
-const MAX_FILE_SIZE = 1 * 1024 * 1024; // 1MB
+// Match OCRPDF-TO-PPT: normalize OCR input scale by targeting ~1080px image height.
+const TARGET_IMAGE_HEIGHT = 1080;
+const HEIGHT_TOLERANCE = 100;
 
-interface CompressResult {
+interface ScaleResult {
   file: File;
-  scale: number; // 1 means no compression, < 1 means compressed
+  scale: number; // 1 means no scaling, >1 means upscaled, <1 means downscaled
 }
 
-async function compressImage(file: File, maxSize: number): Promise<CompressResult> {
-  // If already small enough, return as-is
-  if (file.size <= maxSize) {
-    return { file, scale: 1 };
-  }
-
+async function scaleImageForOCR(file: File, targetHeight: number): Promise<ScaleResult> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     const url = URL.createObjectURL(file);
@@ -30,10 +26,19 @@ async function compressImage(file: File, maxSize: number): Promise<CompressResul
     img.onload = () => {
       URL.revokeObjectURL(url);
 
-      // Calculate scale factor based on file size ratio
-      const ratio = Math.sqrt(maxSize / file.size);
-      const width = Math.floor(img.width * ratio);
-      const height = Math.floor(img.height * ratio);
+      if (img.width <= 0 || img.height <= 0) {
+        reject(new Error('Invalid image dimensions'));
+        return;
+      }
+
+      if (Math.abs(img.height - targetHeight) < HEIGHT_TOLERANCE) {
+        resolve({ file, scale: 1 });
+        return;
+      }
+
+      const scale = targetHeight / Math.max(1, img.height);
+      const width = Math.max(1, Math.round(img.width * scale));
+      const height = Math.max(1, targetHeight);
 
       const canvas = document.createElement('canvas');
       canvas.width = width;
@@ -50,16 +55,15 @@ async function compressImage(file: File, maxSize: number): Promise<CompressResul
       canvas.toBlob(
         (blob) => {
           if (!blob) {
-            reject(new Error('Failed to compress image'));
+            reject(new Error('Failed to scale image for OCR'));
             return;
           }
           resolve({
-            file: new File([blob], file.name, { type: 'image/jpeg' }),
-            scale: ratio,
+            file: new File([blob], file.name.replace(/\.[^.]+$/, '') + '.png', { type: 'image/png' }),
+            scale,
           });
         },
-        'image/jpeg',
-        0.8 // Slightly lower quality for faster OCR
+        'image/png'
       );
     };
 
@@ -80,10 +84,16 @@ export async function detectText(
   imageFile: File,
   onProgress?: ProgressCallback
 ): Promise<DetectionResponse> {
-  // Compress image for faster OCR processing
-  const { file: processedFile, scale } = await compressImage(imageFile, MAX_FILE_SIZE);
+  const { file: processedFile, scale } = await scaleImageForOCR(imageFile, TARGET_IMAGE_HEIGHT);
 
-  onProgress?.('compressing', `Image compressed to ${(processedFile.size / 1024).toFixed(0)}KB`);
+  onProgress?.(
+    'scaling',
+    scale === 1
+      ? `Image kept at original height (${TARGET_IMAGE_HEIGHT}px target window)`
+      : `Image scaled for OCR: ${Math.round(scale * 100)}% (${processedFile.size / 1024 > 1024
+          ? `${(processedFile.size / 1024 / 1024).toFixed(2)}MB`
+          : `${Math.round(processedFile.size / 1024)}KB`})`
+  );
 
   const formData = new FormData();
   formData.append('image', processedFile);
@@ -100,8 +110,8 @@ export async function detectText(
   // Handle SSE streaming response
   const result = await parseSSEResponse(response, onProgress);
 
-  // If image was compressed, scale coordinates back to original size
-  if (scale < 1) {
+  // Map OCR coordinates back into original image space after fixed-height scaling.
+  if (scale !== 1) {
     const inverseScale = 1 / scale;
     result.detections = result.detections.map((detection) => ({
       ...detection,

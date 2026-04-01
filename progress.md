@@ -195,3 +195,80 @@
 
 - 如果用户长时间手动改色后再切回自动色，恢复的是最近一次自动采样得到的 `textColorRaw`，不是历史版本列表。
 - 当前背景色刷新会避开 `bgMode === manual` 的区域；这符合“手动优先”原则，但也意味着背景色不会自动跟着后续重采样变化。
+
+## 2026-04-01 位置与大小对齐修复
+
+触发原因：
+
+- 当前实现虽然已经参考 `OCRPDF-TO-PPT` 做了字号拟合和颜色双轨字段，但实际预览仍无法稳定贴近原图的位置与大小。
+
+本轮范围限定在：
+
+- 让字号拟合和 Fabric 实际渲染使用同一套排版引擎
+- 利用 OCR polygon 恢复旋转文本的局部框与角度
+- 保留原始 OCR 采样框，不再让 Fabric 反向污染原始真相源
+- 兼容旧会话模型
+
+### 已完成
+
+- `lib/text-layout.ts`
+  - `fitFontSizeToBox()` 升级为基于 `fabric.Textbox` 的真实排版测量，不再用 Canvas 2D 粗测后交给 Fabric 另起一套排版。
+  - 新增 `fitTextLayoutToBox()`，统一返回：
+    - `fontSize`
+    - `measuredHeight`
+    - `layoutOffsetY`
+  - 同步把字号上限提高到 `600`，避免大标题被旧上限压小。
+  - `TEXTBOX_LINE_HEIGHT` 调整为更贴近 OCR 紧框的 `1.0`。
+
+- `store/editorStore.ts`
+  - 区域模型新增：
+    - `sourceBounds`
+    - `sourcePolygon`
+    - `rotation`
+    - `layoutOffsetY`
+  - `sourceBounds` 作为原始 OCR 采样区保留，不再被编辑回写覆盖。
+  - 初始文字框不再直接用 axis-aligned `bounds`，而是从 OCR polygon 推导：
+    - 局部起点
+    - 局部宽高
+    - 旋转角
+  - 新增旧会话归一化逻辑，刷新页面后旧模型也会补齐新字段。
+
+- `lib/color-sampler.ts`
+  - 初始字体大小拟合改为使用 polygon 推导出的局部框，而不是只看 axis-aligned bounds。
+
+- `lib/fabric-utils.ts`
+  - Fabric 文本对象新增基于 `rotation` 的同步。
+  - 文本锚点改为基于局部文本框同步，而不是永远贴 axis-aligned 左上角。
+  - 背景矩形继续使用 `sourceBounds`，避免文字框编辑后把原始遮盖区一起带偏。
+
+- `components/editor/CanvasEditor.tsx`
+  - 提交式回写时不再用 `getScaledWidth()/getScaledHeight()` 直接覆盖原始 OCR 语义。
+  - 回写的 `bbox` 改为当前局部文本框，保留 `rotation` 和 `layoutOffsetY`。
+
+- `components/editor/TextControls.tsx`
+  - 切换字体、切换字重时，重新使用 Fabric 实测布局拟合字号，而不是旧的 Canvas 粗测。
+  - 自动颜色重采样改为基于 `sourceBounds`，不会因为用户拖动过文字框而采到错误区域。
+
+### 验证结果
+
+- 已执行：`npm run build`
+- 结果：通过
+
+构建警告：
+
+- Next.js 推断 workspace root 时发现多个 `package-lock.json`
+- 本地 `@next/swc` 版本仍是 `15.5.7`，而 Next.js 是 `15.5.11`
+- `/api/ocr` 使用 edge runtime，因此对应页面不会走静态生成
+
+这些仍是现有工程告警，不是本轮改动引入的构建失败。
+
+### 当前仍未完成
+
+- 还没有“原始字体族识别”，默认仍然只能在候选字体里手动切换。
+- 旋转文本已经能按 polygon 角度摆正，但背景遮盖层仍然是 axis-aligned `fill + eraser`，复杂倾斜背景场景还不算完全修好。
+- 仍然没有 ROI 级重新 OCR，所以原始框的精度仍取决于第一次 OCR 的质量。
+
+### 现存风险
+
+- OCR 前仍然按文件体积压缩图片，再把坐标逆缩放回来；小字和细字的框精度仍会受这一层影响。
+- 如果原图真实字体和候选字体差异很大，即使同引擎拟合已经修好，视觉宽度和字面细节仍不可能完全一致。

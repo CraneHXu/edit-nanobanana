@@ -10,7 +10,7 @@ import { FontSelector } from './FontSelector';
 import { useEditorStore } from '@/store/editorStore';
 import { sampleRegionStyle } from '@/lib/color-sampler';
 import { rgbToHex, hexToRgb } from '@/lib/fabric-utils';
-import { fitFontSizeToBox } from '@/lib/text-layout';
+import { fitTextLayoutToBox } from '@/lib/text-layout';
 import { RGBColor } from '@/types/ocr';
 import { useI18n } from '@/lib/i18n';
 
@@ -62,8 +62,8 @@ export function TextControls() {
     updateElement(selectedElement.id, { text: newText });
   };
 
-  const handleFontChange = (newFont: string) => {
-    const fittedFontSize = fitFontSizeToBox(
+  const handleFontChange = async (newFont: string) => {
+    const layout = await fitTextLayoutToBox(
       selectedElement.text,
       selectedElement.bbox,
       newFont,
@@ -71,11 +71,12 @@ export function TextControls() {
     );
 
     setLocalFontFamily(newFont);
-    setLocalFontSize(fittedFontSize);
-    setLocalFontSizeInput(String(Math.round(fittedFontSize)));
+    setLocalFontSize(layout.fontSize);
+    setLocalFontSizeInput(String(Math.round(layout.fontSize)));
     updateElement(selectedElement.id, {
       fontFamily: newFont,
-      fontSize: fittedFontSize,
+      fontSize: layout.fontSize,
+      layoutOffsetY: layout.layoutOffsetY,
     });
   };
 
@@ -115,20 +116,21 @@ export function TextControls() {
     });
   };
 
-  const handleFontWeightChange = () => {
+  const handleFontWeightChange = async () => {
     const nextWeight = selectedElement.fontWeight === 'bold' ? 'normal' : 'bold';
-    const fittedFontSize = fitFontSizeToBox(
+    const layout = await fitTextLayoutToBox(
       selectedElement.text,
       selectedElement.bbox,
       selectedElement.fontFamily,
       nextWeight,
     );
 
-    setLocalFontSize(fittedFontSize);
-    setLocalFontSizeInput(String(Math.round(fittedFontSize)));
+    setLocalFontSize(layout.fontSize);
+    setLocalFontSizeInput(String(Math.round(layout.fontSize)));
     updateElement(selectedElement.id, {
       fontWeight: nextWeight,
-      fontSize: fittedFontSize,
+      fontSize: layout.fontSize,
+      layoutOffsetY: layout.layoutOffsetY,
     });
   };
 
@@ -154,7 +156,7 @@ export function TextControls() {
     try {
       const sampledStyle = await sampleRegionStyle(originalImage, {
         text: selectedElement.text,
-        bounds: selectedElement.bbox,
+        bounds: selectedElement.sourceBounds,
         fontWeight: selectedElement.fontWeight,
         textAlign: selectedElement.textAlign,
       });
