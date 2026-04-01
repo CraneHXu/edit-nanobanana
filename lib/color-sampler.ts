@@ -43,10 +43,70 @@ interface TextColorAnalysis {
   quantizedColor: RGBColor;
 }
 
+interface RegionStyleInput {
+  text: string;
+  bounds: { x: number; y: number; width: number; height: number };
+  fontWeight?: FontWeight;
+  textAlign?: TextAlign;
+}
+
+interface StyleInferenceContext {
+  image: HTMLImageElement;
+  canvas: HTMLCanvasElement;
+  ctx: CanvasRenderingContext2D;
+}
+
+export interface SampledRegionStyle {
+  bgColor: RGBColor;
+  textColorRaw: RGBColor;
+  textColorQuantized: RGBColor;
+  fontWeight: FontWeight;
+  textAlign: TextAlign;
+}
+
 export async function enhanceDetectionsWithStyles(
   detections: OCRDetection[],
   imageUrl: string,
 ): Promise<OCRDetection[]> {
+  const context = await createStyleInferenceContext(imageUrl);
+  await loadGoogleFont(DEFAULT_FONT_FAMILY);
+
+  return detections.map((detection) => {
+    const sampledStyle = inferRegionStyleFromContext(context, detection);
+    const fontWeight = sampledStyle.fontWeight;
+
+    return {
+      ...detection,
+      bgColor: sampledStyle.bgColor,
+      textColor: sampledStyle.textColorRaw,
+      textColorRaw: sampledStyle.textColorRaw,
+      textColorQuantized: sampledStyle.textColorQuantized,
+      fontSize: fitFontSizeToBox(detection.text, detection.bounds, DEFAULT_FONT_FAMILY, fontWeight),
+      fontWeight,
+      textAlign: sampledStyle.textAlign,
+    };
+  });
+}
+
+export async function sampleRegionStyle(
+  imageUrl: string,
+  target: RegionStyleInput,
+): Promise<SampledRegionStyle> {
+  const context = await createStyleInferenceContext(imageUrl);
+  return inferRegionStyleFromContext(context, target);
+}
+
+function loadImage(url: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.crossOrigin = 'anonymous';
+    image.onload = () => resolve(image);
+    image.onerror = reject;
+    image.src = url;
+  });
+}
+
+async function createStyleInferenceContext(imageUrl: string): Promise<StyleInferenceContext> {
   const image = await loadImage(imageUrl);
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
@@ -59,35 +119,34 @@ export async function enhanceDetectionsWithStyles(
   canvas.height = image.height;
   ctx.drawImage(image, 0, 0);
 
-  await loadGoogleFont(DEFAULT_FONT_FAMILY);
-
-  return detections.map((detection) => {
-    const bgColor = sampleBackgroundColor(ctx, image.width, image.height, detection.bounds);
-    const colorAnalysis = sampleTextColor(ctx, image.width, image.height, detection.bounds, bgColor);
-    const fontWeight = detection.fontWeight ?? DEFAULT_FONT_WEIGHT;
-    const textAlign = detection.textAlign ?? DEFAULT_TEXT_ALIGN;
-
-    return {
-      ...detection,
-      bgColor,
-      textColor: colorAnalysis.rawColor,
-      textColorRaw: colorAnalysis.rawColor,
-      textColorQuantized: colorAnalysis.quantizedColor,
-      fontSize: fitFontSizeToBox(detection.text, detection.bounds, DEFAULT_FONT_FAMILY, fontWeight),
-      fontWeight,
-      textAlign,
-    };
-  });
+  return { image, canvas, ctx };
 }
 
-function loadImage(url: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const image = new Image();
-    image.crossOrigin = 'anonymous';
-    image.onload = () => resolve(image);
-    image.onerror = reject;
-    image.src = url;
-  });
+function inferRegionStyleFromContext(
+  context: StyleInferenceContext,
+  target: RegionStyleInput,
+): SampledRegionStyle {
+  const bgColor = sampleBackgroundColor(
+    context.ctx,
+    context.image.width,
+    context.image.height,
+    target.bounds,
+  );
+  const colorAnalysis = sampleTextColor(
+    context.ctx,
+    context.image.width,
+    context.image.height,
+    target.bounds,
+    bgColor,
+  );
+
+  return {
+    bgColor,
+    textColorRaw: colorAnalysis.rawColor,
+    textColorQuantized: colorAnalysis.quantizedColor,
+    fontWeight: target.fontWeight ?? DEFAULT_FONT_WEIGHT,
+    textAlign: target.textAlign ?? DEFAULT_TEXT_ALIGN,
+  };
 }
 
 function sampleBackgroundColor(

@@ -1,13 +1,14 @@
 "use client";
 
 import React, { useEffect, useState } from 'react';
-import { AlignCenter, AlignLeft, AlignRight, Bold, Eye, EyeOff, RotateCcw, Square } from 'lucide-react';
+import { AlignCenter, AlignLeft, AlignRight, Bold, Eye, EyeOff, Palette, RotateCcw, Square, Wand2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
 import { FontSelector } from './FontSelector';
 import { useEditorStore } from '@/store/editorStore';
+import { sampleRegionStyle } from '@/lib/color-sampler';
 import { rgbToHex, hexToRgb } from '@/lib/fabric-utils';
 import { fitFontSizeToBox } from '@/lib/text-layout';
 import { RGBColor } from '@/types/ocr';
@@ -17,6 +18,7 @@ export function TextControls() {
   const {
     selectedElementId,
     pageModel,
+    originalImage,
     updateElement,
     toggleShowBackground,
     toggleShowText,
@@ -34,6 +36,7 @@ export function TextControls() {
   const [localFontFamily, setLocalFontFamily] = useState('Noto Sans SC');
   const [localFontColor, setLocalFontColor] = useState<RGBColor>({ r: 0, g: 0, b: 0 });
   const [localBgColor, setLocalBgColor] = useState<RGBColor>({ r: 255, g: 255, b: 255 });
+  const [isResamplingColors, setIsResamplingColors] = useState(false);
 
   useEffect(() => {
     if (!selectedElement) return;
@@ -139,6 +142,49 @@ export function TextControls() {
     updateElement(selectedElement.id, {
       bgColor: newColor,
       bgMode: 'manual',
+    });
+  };
+
+  const handleRefreshAutoColors = async () => {
+    if (!originalImage || selectedElement.textColorMode !== 'auto') {
+      return;
+    }
+
+    setIsResamplingColors(true);
+    try {
+      const sampledStyle = await sampleRegionStyle(originalImage, {
+        text: selectedElement.text,
+        bounds: selectedElement.bbox,
+        fontWeight: selectedElement.fontWeight,
+        textAlign: selectedElement.textAlign,
+      });
+      const updates: Parameters<typeof updateElement>[1] = {
+        textColorRaw: sampledStyle.textColorRaw,
+        textColorQuantized: sampledStyle.textColorQuantized,
+        fontColor: sampledStyle.textColorRaw,
+      };
+
+      setLocalFontColor(sampledStyle.textColorRaw);
+
+      if (selectedElement.bgMode !== 'manual') {
+        updates.bgColor = sampledStyle.bgColor;
+        setLocalBgColor(sampledStyle.bgColor);
+      }
+
+      updateElement(selectedElement.id, updates);
+    } catch (error) {
+      console.error('Failed to resample colors:', error);
+      alert(`${t('controls.refreshAutoColor')}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setIsResamplingColors(false);
+    }
+  };
+
+  const handleUseAutoTextColor = () => {
+    setLocalFontColor(selectedElement.textColorRaw);
+    updateElement(selectedElement.id, {
+      fontColor: selectedElement.textColorRaw,
+      textColorMode: 'auto',
     });
   };
 
@@ -304,6 +350,31 @@ export function TextControls() {
             disabled={!selectedElement.showText}
           />
         </div>
+        <div className="grid grid-cols-2 gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={handleRefreshAutoColors}
+            disabled={!selectedElement.showText || selectedElement.textColorMode !== 'auto' || isResamplingColors}
+          >
+            <Wand2 className="w-4 h-4 mr-2" />
+            {isResamplingColors ? t('controls.resampling') : t('controls.refreshAutoColor')}
+          </Button>
+          <Button
+            type="button"
+            variant={selectedElement.textColorMode === 'auto' ? 'default' : 'outline'}
+            onClick={handleUseAutoTextColor}
+            disabled={!selectedElement.showText || selectedElement.textColorMode === 'auto'}
+          >
+            <Palette className="w-4 h-4 mr-2" />
+            {t('controls.useAutoColor')}
+          </Button>
+        </div>
+        <p className="text-xs text-gray-500">
+          {selectedElement.textColorMode === 'auto'
+            ? t('controls.autoColorMode')
+            : t('controls.manualColorMode')}
+        </p>
       </div>
 
       {selectedElement.showBackground && (
@@ -333,17 +404,26 @@ export function TextControls() {
           <div className="flex items-center gap-2">
             <div
               className="w-6 h-6 rounded border"
-              style={{ backgroundColor: rgbToHex(selectedElement.original.textColorRaw) }}
+              style={{ backgroundColor: rgbToHex(selectedElement.textColorRaw) }}
             />
-            <span>{t('controls.text')}</span>
+            <span>{t('controls.detectedTextRaw')}</span>
           </div>
+          {selectedElement.textColorQuantized && (
+            <div className="flex items-center gap-2">
+              <div
+                className="w-6 h-6 rounded border"
+                style={{ backgroundColor: rgbToHex(selectedElement.textColorQuantized) }}
+              />
+              <span>{t('controls.detectedTextQuantized')}</span>
+            </div>
+          )}
           <div className="flex items-center gap-2">
-            <div
-              className="w-6 h-6 rounded border"
-              style={{ backgroundColor: rgbToHex(selectedElement.original.bgColor ?? { r: 255, g: 255, b: 255 }) }}
-            />
-            <span>{t('controls.background')}</span>
-          </div>
+              <div
+                className="w-6 h-6 rounded border"
+                style={{ backgroundColor: rgbToHex(selectedElement.bgColor ?? { r: 255, g: 255, b: 255 }) }}
+              />
+              <span>{t('controls.detectedBackground')}</span>
+            </div>
         </div>
       </div>
 
