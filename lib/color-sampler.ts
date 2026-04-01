@@ -1,33 +1,31 @@
 /**
- * Color sampling utilities for extracting background colors from images
- * Based on backend ocr_service.py implementation
+ * Color sampling utilities for extracting background and foreground colors.
  */
 
 import { OCRDetection, RGBColor } from '@/types/ocr';
 
-/**
- * Enhance detections with sampled colors from the original image
- * Main entry point - samples both text and background colors
- */
+interface SampledPixel extends RGBColor {
+  luminance: number;
+  distanceToBackground: number;
+}
+
 export async function enhanceDetectionsWithColors(
   detections: OCRDetection[],
   imageUrl: string
 ): Promise<OCRDetection[]> {
-  const img = await loadImage(imageUrl);
+  const image = await loadImage(imageUrl);
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
 
-  if (!ctx) {
-    return detections;
-  }
+  if (!ctx) return detections;
 
-  canvas.width = img.width;
-  canvas.height = img.height;
-  ctx.drawImage(img, 0, 0);
+  canvas.width = image.width;
+  canvas.height = image.height;
+  ctx.drawImage(image, 0, 0);
 
   return detections.map((detection) => {
-    const bgColor = sampleBackgroundColor(ctx, img.width, img.height, detection.bounds);
-    const textColor = sampleTextColor(ctx, img.width, img.height, detection.bounds);
+    const bgColor = sampleBackgroundColor(ctx, image.width, image.height, detection.bounds);
+    const textColor = sampleTextColor(ctx, image.width, image.height, detection.bounds, bgColor);
 
     return {
       ...detection,
@@ -39,138 +37,99 @@ export async function enhanceDetectionsWithColors(
 
 function loadImage(url: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => resolve(img);
-    img.onerror = reject;
-    img.src = url;
+    const image = new Image();
+    image.crossOrigin = 'anonymous';
+    image.onload = () => resolve(image);
+    image.onerror = reject;
+    image.src = url;
   });
 }
 
-/**
- * Sample background color from strips around the text region
- * Mirrors backend get_background_color implementation
- */
 function sampleBackgroundColor(
   ctx: CanvasRenderingContext2D,
   imgWidth: number,
   imgHeight: number,
   bounds: { x: number; y: number; width: number; height: number },
-  margin: number = 5
+  margin: number = 6
 ): RGBColor {
-  const { x, y, width: w, height: h } = bounds;
+  const { x, y, width, height } = bounds;
   const colors: RGBColor[] = [];
 
-  // Sample from strips around the text box (matching backend logic)
-  // Top strip
   if (y > margin) {
-    const strip = sampleStrip(ctx, x, Math.max(0, y - margin), w, margin, imgWidth, imgHeight);
-    colors.push(...strip);
+    colors.push(...sampleStrip(ctx, x, Math.max(0, y - margin), width, margin, imgWidth, imgHeight));
   }
-
-  // Bottom strip
-  if (y + h + margin < imgHeight) {
-    const strip = sampleStrip(ctx, x, y + h, w, margin, imgWidth, imgHeight);
-    colors.push(...strip);
+  if (y + height + margin < imgHeight) {
+    colors.push(...sampleStrip(ctx, x, y + height, width, margin, imgWidth, imgHeight));
   }
-
-  // Left strip
   if (x > margin) {
-    const strip = sampleStrip(ctx, Math.max(0, x - margin), y, margin, h, imgWidth, imgHeight);
-    colors.push(...strip);
+    colors.push(...sampleStrip(ctx, Math.max(0, x - margin), y, margin, height, imgWidth, imgHeight));
+  }
+  if (x + width + margin < imgWidth) {
+    colors.push(...sampleStrip(ctx, x + width, y, margin, height, imgWidth, imgHeight));
   }
 
-  // Right strip
-  if (x + w + margin < imgWidth) {
-    const strip = sampleStrip(ctx, x + w, y, margin, h, imgWidth, imgHeight);
-    colors.push(...strip);
-  }
-
-  if (colors.length === 0) {
-    return { r: 255, g: 255, b: 255 };
-  }
-
-  // Calculate median color (like backend)
-  return medianColor(colors);
+  return colors.length ? medianColor(colors) : { r: 255, g: 255, b: 255 };
 }
 
-/**
- * Sample text color using Otsu-like thresholding
- * Mirrors backend get_text_color implementation
- */
 function sampleTextColor(
   ctx: CanvasRenderingContext2D,
   imgWidth: number,
   imgHeight: number,
-  bounds: { x: number; y: number; width: number; height: number }
+  bounds: { x: number; y: number; width: number; height: number },
+  background: RGBColor,
 ): RGBColor {
-  const { x, y, width: w, height: h } = bounds;
+  const x1 = Math.max(0, Math.round(bounds.x));
+  const y1 = Math.max(0, Math.round(bounds.y));
+  const x2 = Math.min(imgWidth, Math.round(bounds.x + bounds.width));
+  const y2 = Math.min(imgHeight, Math.round(bounds.y + bounds.height));
+  const width = x2 - x1;
+  const height = y2 - y1;
 
-  // Clamp bounds to image
-  const x1 = Math.max(0, Math.round(x));
-  const y1 = Math.max(0, Math.round(y));
-  const x2 = Math.min(imgWidth, Math.round(x + w));
-  const y2 = Math.min(imgHeight, Math.round(y + h));
-
-  const regionWidth = x2 - x1;
-  const regionHeight = y2 - y1;
-
-  if (regionWidth <= 0 || regionHeight <= 0) {
+  if (width <= 0 || height <= 0) {
     return { r: 0, g: 0, b: 0 };
   }
 
   try {
-    const imageData = ctx.getImageData(x1, y1, regionWidth, regionHeight);
+    const imageData = ctx.getImageData(x1, y1, width, height);
     const pixels = imageData.data;
+    const sampledPixels: SampledPixel[] = [];
 
-    // Calculate grayscale and find threshold using simple method
-    const grayValues: number[] = [];
-    for (let i = 0; i < pixels.length; i += 4) {
-      const gray = 0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2];
-      grayValues.push(gray);
-    }
-
-    // Simple threshold: use mean as threshold
-    const mean = grayValues.reduce((a, b) => a + b, 0) / grayValues.length;
-
-    // Collect text pixels (darker than threshold = text)
-    const textPixels: RGBColor[] = [];
-    for (let i = 0; i < pixels.length; i += 4) {
-      const gray = 0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2];
-      // Text is usually darker than background
-      if (gray < mean) {
-        textPixels.push({
-          r: pixels[i],
-          g: pixels[i + 1],
-          b: pixels[i + 2],
-        });
-      }
-    }
-
-    if (textPixels.length > 0) {
-      return medianColor(textPixels);
-    }
-
-    // Fallback: return darkest pixels
-    const allPixels: RGBColor[] = [];
-    for (let i = 0; i < pixels.length; i += 4) {
-      allPixels.push({
-        r: pixels[i],
-        g: pixels[i + 1],
-        b: pixels[i + 2],
+    for (let index = 0; index < pixels.length; index += 4) {
+      const pixel = {
+        r: pixels[index],
+        g: pixels[index + 1],
+        b: pixels[index + 2],
+      };
+      sampledPixels.push({
+        ...pixel,
+        luminance: getLuminance(pixel),
+        distanceToBackground: colorDistance(pixel, background),
       });
     }
-    allPixels.sort((a, b) => (a.r + a.g + a.b) - (b.r + b.g + b.b));
-    return allPixels[0] || { r: 0, g: 0, b: 0 };
 
+    if (!sampledPixels.length) {
+      return { r: 0, g: 0, b: 0 };
+    }
+
+    const backgroundLuminance = getLuminance(background);
+    const sortedByDistance = [...sampledPixels].sort((a, b) => b.distanceToBackground - a.distanceToBackground);
+    const contrastCandidates = sortedByDistance.slice(0, Math.max(8, Math.floor(sortedByDistance.length * 0.2)));
+    const darkCandidates = contrastCandidates.filter((pixel) => pixel.luminance <= backgroundLuminance);
+    const lightCandidates = contrastCandidates.filter((pixel) => pixel.luminance > backgroundLuminance);
+
+    const preferred = backgroundLuminance >= 128 ? darkCandidates : lightCandidates;
+    const fallback = preferred.length ? preferred : contrastCandidates;
+
+    if (fallback.length) {
+      return medianColor(fallback);
+    }
+
+    return sortedByDistance[0] || { r: 0, g: 0, b: 0 };
   } catch {
     return { r: 0, g: 0, b: 0 };
   }
 }
 
-/**
- * Sample pixels from a rectangular strip
- */
 function sampleStrip(
   ctx: CanvasRenderingContext2D,
   x: number,
@@ -181,54 +140,53 @@ function sampleStrip(
   imgHeight: number
 ): RGBColor[] {
   const colors: RGBColor[] = [];
-
   const x1 = Math.max(0, Math.round(x));
   const y1 = Math.max(0, Math.round(y));
   const x2 = Math.min(imgWidth, Math.round(x + width));
   const y2 = Math.min(imgHeight, Math.round(y + height));
 
-  const w = x2 - x1;
-  const h = y2 - y1;
-
-  if (w <= 0 || h <= 0) return colors;
+  if (x2 <= x1 || y2 <= y1) return colors;
 
   try {
-    const imageData = ctx.getImageData(x1, y1, w, h);
+    const imageData = ctx.getImageData(x1, y1, x2 - x1, y2 - y1);
     const pixels = imageData.data;
+    const step = Math.max(1, Math.floor(pixels.length / 4 / 100));
 
-    // Sample every few pixels to avoid too many samples
-    const step = Math.max(1, Math.floor(pixels.length / 4 / 50));
-    for (let i = 0; i < pixels.length; i += 4 * step) {
+    for (let index = 0; index < pixels.length; index += 4 * step) {
       colors.push({
-        r: pixels[i],
-        g: pixels[i + 1],
-        b: pixels[i + 2],
+        r: pixels[index],
+        g: pixels[index + 1],
+        b: pixels[index + 2],
       });
     }
   } catch {
-    // Ignore sampling errors
+    return colors;
   }
 
   return colors;
 }
 
-/**
- * Calculate median color from array of colors
- */
+function getLuminance(color: RGBColor): number {
+  return 0.299 * color.r + 0.587 * color.g + 0.114 * color.b;
+}
+
+function colorDistance(a: RGBColor, b: RGBColor): number {
+  return Math.sqrt(
+    ((a.r - b.r) ** 2) +
+    ((a.g - b.g) ** 2) +
+    ((a.b - b.b) ** 2)
+  );
+}
+
 function medianColor(colors: RGBColor[]): RGBColor {
-  if (colors.length === 0) {
-    return { r: 255, g: 255, b: 255 };
-  }
-
-  const rs = colors.map(c => c.r).sort((a, b) => a - b);
-  const gs = colors.map(c => c.g).sort((a, b) => a - b);
-  const bs = colors.map(c => c.b).sort((a, b) => a - b);
-
-  const mid = Math.floor(colors.length / 2);
+  const reds = colors.map((color) => color.r).sort((a, b) => a - b);
+  const greens = colors.map((color) => color.g).sort((a, b) => a - b);
+  const blues = colors.map((color) => color.b).sort((a, b) => a - b);
+  const middle = Math.floor(colors.length / 2);
 
   return {
-    r: rs[mid],
-    g: gs[mid],
-    b: bs[mid],
+    r: reds[middle],
+    g: greens[middle],
+    b: blues[middle],
   };
 }

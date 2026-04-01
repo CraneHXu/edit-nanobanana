@@ -1,16 +1,25 @@
 "use client";
 
-import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { useEditorStore } from '@/store/editorStore';
-import { createTextObject, createBackgroundRect } from '@/lib/fabric-utils';
-import { TextElement, EraserPath } from '@/types/canvas';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import type { Canvas as FabricCanvas, Rect, Textbox } from 'fabric';
 import { loadGoogleFont } from '@/lib/font-loader';
-import type { Canvas as FabricCanvas } from 'fabric';
+import { useEditorStore } from '@/store/editorStore';
+import type { EraserPath, TextElement } from '@/types/canvas';
+import {
+  createBackgroundRect,
+  createTextObject,
+  rgbToString,
+  syncBackgroundRect,
+  syncTextObject,
+} from '@/lib/fabric-utils';
 
-// Default font for CJK support
 const DEFAULT_FONT = 'Noto Sans SC';
 
-// Store fabric module classes (v6 API)
+type RuntimeBinding = {
+  textObj: Textbox;
+  bgRect?: Rect;
+};
+
 let fabricModule: typeof import('fabric') | null = null;
 let fabricPromise: Promise<typeof import('fabric')> | null = null;
 
@@ -19,51 +28,56 @@ function loadFabric() {
     return Promise.resolve(fabricModule);
   }
   if (!fabricPromise) {
-    fabricPromise = import('fabric').then((module) => {
-      fabricModule = module;
-      return fabricModule;
-    }).catch((error) => {
-      console.error('Failed to import fabric:', error);
-      fabricPromise = null;
-      throw error;
-    });
+    fabricPromise = import('fabric')
+      .then((module) => {
+        fabricModule = module;
+        return fabricModule;
+      })
+      .catch((error) => {
+        console.error('Failed to import fabric:', error);
+        fabricPromise = null;
+        throw error;
+      });
   }
   return fabricPromise;
 }
 
-// Helper to check if canvas is still valid (not disposed)
 function isCanvasValid(canvas: FabricCanvas | null): canvas is FabricCanvas {
   if (!canvas) return false;
   try {
-    // Check if the canvas element still exists
     return !!(canvas as any).lowerCanvasEl;
   } catch {
     return false;
   }
 }
 
-// Export fabric module for other components
 export function getFabricModule() {
   return fabricModule;
 }
 
+function roundToImagePixel(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
 export function CanvasEditor() {
-  // Use a wrapper div instead of a canvas ref - Fabric will create its own canvas
   const containerRef = useRef<HTMLDivElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const fabricCanvasRef = useRef<FabricCanvas | null>(null);
-  const imageScaleRef = useRef<number>(1);
+  const imageScaleRef = useRef(1);
+  const runtimeBindingsRef = useRef(new Map<number, RuntimeBinding>());
+  const suppressCanvasWritebackRef = useRef(false);
+  const pageModelRef = useRef(useEditorStore.getState().pageModel);
+  const eraserSizeRef = useRef(useEditorStore.getState().eraserSize);
   const [fabricReady, setFabricReady] = useState(false);
   const [fontLoaded, setFontLoaded] = useState(false);
-  const isDrawingRef = useRef(false);
   const [cursorPos, setCursorPos] = useState<{ x: number; y: number } | null>(null);
+  const isDrawingRef = useRef(false);
+
   const {
     originalImage,
-    detections,
-    textElements,
+    pageModel,
     setCanvas,
     setCanvasScale,
-    setTextElements,
     setSelectedElement,
     updateElement,
     isDetecting,
@@ -74,33 +88,31 @@ export function CanvasEditor() {
     setViewportZoom,
   } = useEditorStore();
 
-  // Load fabric.js and fonts on mount
   useEffect(() => {
-    Promise.all([
-      loadFabric(),
-      loadGoogleFont(DEFAULT_FONT)
-    ]).then(([fabric]) => {
-      if (fabric) {
-        setFabricReady(true);
-        setFontLoaded(true);
-      }
-    }).catch((error) => {
-      console.error('Failed to load Fabric.js or fonts:', error);
-    });
+    pageModelRef.current = pageModel;
+  }, [pageModel]);
+
+  useEffect(() => {
+    eraserSizeRef.current = eraserSize;
+  }, [eraserSize]);
+
+  useEffect(() => {
+    Promise.all([loadFabric(), loadGoogleFont(DEFAULT_FONT)])
+      .then(([fabric]) => {
+        if (fabric) {
+          setFabricReady(true);
+          setFontLoaded(true);
+        }
+      })
+      .catch((error) => {
+        console.error('Failed to load Fabric.js or fonts:', error);
+      });
   }, []);
 
-  // Initialize canvas when fabric is ready
   useEffect(() => {
-    if (!fabricReady || !fabricModule || !wrapperRef.current) {
-      return;
-    }
+    if (!fabricReady || !fabricModule || !wrapperRef.current) return;
+    if (fabricCanvasRef.current && isCanvasValid(fabricCanvasRef.current)) return;
 
-    // If we already have a valid canvas, don't recreate
-    if (fabricCanvasRef.current && isCanvasValid(fabricCanvasRef.current)) {
-      return;
-    }
-
-    // Create a canvas element programmatically
     const canvasEl = document.createElement('canvas');
     canvasEl.width = 800;
     canvasEl.height = 600;
@@ -116,274 +128,183 @@ export function CanvasEditor() {
     setCanvas(fabricCanvas);
 
     return () => {
+      runtimeBindingsRef.current.clear();
       if (fabricCanvasRef.current) {
         fabricCanvasRef.current.dispose();
         fabricCanvasRef.current = null;
       }
-      // Clean up the wrapper content
+      setCanvas(null);
       if (wrapperRef.current) {
         wrapperRef.current.innerHTML = '';
       }
     };
   }, [fabricReady, setCanvas]);
 
-  // Load background image
   useEffect(() => {
     if (!fabricReady || !fabricModule || !originalImage) return;
 
     const currentCanvas = fabricCanvasRef.current;
     if (!isCanvasValid(currentCanvas)) return;
 
-    // Fabric.js v6 uses Promise-based API
-    fabricModule.FabricImage.fromURL(originalImage).then((img) => {
-      // Check canvas is still valid after async operation
-      if (!isCanvasValid(fabricCanvasRef.current)) return;
+    fabricModule.FabricImage.fromURL(originalImage)
+      .then((img) => {
+        if (!isCanvasValid(fabricCanvasRef.current)) return;
 
-      const imgWidth = img.width || 1;
-      const imgHeight = img.height || 1;
+        const imgWidth = img.width || 1;
+        const imgHeight = img.height || 1;
+        const containerWidth = containerRef.current?.clientWidth || 800;
+        const maxHeight = 600;
 
-      // Get container width for responsive sizing
-      const containerWidth = containerRef.current?.clientWidth || 800;
-      const maxHeight = 600;
+        let scale: number;
+        if (imgWidth / imgHeight > containerWidth / maxHeight) {
+          scale = Math.min(1, containerWidth / imgWidth);
+        } else {
+          scale = Math.min(containerWidth / imgWidth, maxHeight / imgHeight);
+        }
 
-      // Calculate scale to fit width while maintaining aspect ratio
-      // For wide images, prioritize showing full width with scroll for height
-      // For tall images, limit height and allow horizontal scroll
-      let scale: number;
+        scale = Math.max(scale, 0.1);
+        imageScaleRef.current = scale;
+        setCanvasScale(scale);
 
-      if (imgWidth / imgHeight > containerWidth / maxHeight) {
-        // Wide image: scale to fit container width, allow vertical scroll if needed
-        scale = Math.min(1, containerWidth / imgWidth);
-      } else {
-        // Normal or tall image: scale to fit within container
-        scale = Math.min(
-          containerWidth / imgWidth,
-          maxHeight / imgHeight
-        );
-      }
+        fabricCanvasRef.current!.setWidth(imgWidth * scale);
+        fabricCanvasRef.current!.setHeight(imgHeight * scale);
 
-      // Ensure minimum visibility
-      scale = Math.max(scale, 0.1);
+        img.set({
+          scaleX: scale,
+          scaleY: scale,
+          left: 0,
+          top: 0,
+        });
 
-      // Store the scale for detection coordinate transformation
-      imageScaleRef.current = scale;
-      setCanvasScale(scale);
-
-      // Update canvas size to match scaled image
-      const scaledWidth = imgWidth * scale;
-      const scaledHeight = imgHeight * scale;
-
-      // Set dimensions
-      fabricCanvasRef.current!.setWidth(scaledWidth);
-      fabricCanvasRef.current!.setHeight(scaledHeight);
-
-      // Set image scale and position
-      img.set({
-        scaleX: scale,
-        scaleY: scale,
-        left: 0,
-        top: 0,
+        fabricCanvasRef.current!.backgroundImage = img;
+        fabricCanvasRef.current!.renderAll();
+      })
+      .catch((error) => {
+        console.error('Failed to load background image:', error);
       });
-
-      // Set as background (non-selectable) - v6 API
-      fabricCanvasRef.current!.backgroundImage = img;
-      fabricCanvasRef.current!.renderAll();
-    }).catch((error) => {
-      console.error('Failed to load background image:', error);
-    });
   }, [fabricReady, originalImage, setCanvasScale]);
 
-  // Create text objects from detections
-  useEffect(() => {
-    if (!fabricReady || !fabricModule || !fontLoaded || !detections.length) return;
+  const applyEraserPaths = useCallback((rect: Rect, paths: EraserPath[], bgColor: TextElement['bgColor']) => {
+    if (!fabricModule) return;
 
     const currentCanvas = fabricCanvasRef.current;
     if (!isCanvasValid(currentCanvas)) return;
 
-    const scale = imageScaleRef.current;
-
-    // Clear existing objects (but keep background)
-    const objects = currentCanvas.getObjects();
-    objects.forEach((obj) => currentCanvas.remove(obj));
-
-    // Create new text elements
-    const newElements = new Map<number, TextElement>();
-
-    detections.forEach((detection) => {
-      // Scale the detection bounds to match canvas scale
-      const scaledDetection = {
-        ...detection,
-        bounds: {
-          x: detection.bounds.x * scale,
-          y: detection.bounds.y * scale,
-          width: detection.bounds.width * scale,
-          height: detection.bounds.height * scale,
-        },
-        fontSize: detection.fontSize * scale,
-      };
-
-      // Create text object (always visible initially)
-      const fabricText = createTextObject(fabricModule!, scaledDetection, DEFAULT_FONT);
-
-      // Store original transform for reset
-      const originalTransform = {
-        left: fabricText.left || 0,
-        top: fabricText.top || 0,
-        scaleX: fabricText.scaleX || 1,
-        scaleY: fabricText.scaleY || 1,
-        angle: fabricText.angle || 0,
-      };
-
-      // Add to canvas
-      currentCanvas.add(fabricText);
-
-      // Store in state - default: showBackground=true, showText=true
-      newElements.set(detection.index, {
-        id: detection.index,
-        detection: scaledDetection,
-        text: detection.text,
-        fontFamily: DEFAULT_FONT,
-        fontSize: scaledDetection.fontSize,
-        fontColor: detection.textColor,
-        bgColor: detection.bgColor,
-        showBackground: true,
-        showText: true,
-        fabricObject: fabricText,
-        fabricBgRect: undefined,
-        eraserPaths: [],
-        originalTransform,
-      });
-
-      // Add selection handler
-      fabricText.on('selected', () => {
-        setSelectedElement(detection.index);
-      });
-    });
-
-    setTextElements(newElements);
-    currentCanvas.renderAll();
-  }, [fabricReady, fontLoaded, detections, setTextElements, setSelectedElement]);
-
-  // Handle visibility changes for text elements (show/hide background and text)
-  useEffect(() => {
-    if (!fabricReady || !fabricModule) return;
-
-    const currentCanvas = fabricCanvasRef.current;
-    if (!isCanvasValid(currentCanvas)) return;
-
-    textElements.forEach((element) => {
-      const hasRect = !!element.fabricBgRect;
-      const needsRect = element.showBackground;
-
-      // Handle background rect
-      if (needsRect && !hasRect) {
-        // Add background rect with element's bgColor
-        const rect = createBackgroundRect(fabricModule!, element.detection.bounds, element.bgColor);
-        currentCanvas.add(rect);
-        // Send to back (but in front of background image)
-        currentCanvas.sendObjectToBack(rect);
-        // Update element with rect reference
-        updateElement(element.id, { fabricBgRect: rect });
-      } else if (!needsRect && hasRect) {
-        // Remove background rect
-        currentCanvas.remove(element.fabricBgRect);
-        updateElement(element.id, { fabricBgRect: undefined });
-      } else if (needsRect && hasRect) {
-        // Update existing rect color if it changed
-        element.fabricBgRect.set({ fill: `rgb(${element.bgColor.r}, ${element.bgColor.g}, ${element.bgColor.b})` });
-      }
-
-      // Handle text visibility
-      if (element.fabricObject) {
-        element.fabricObject.set({ visible: element.showText });
-      }
-    });
-
-    currentCanvas.renderAll();
-  }, [fabricReady, textElements, updateElement]);
-
-  // Apply eraser effect by modifying the rect's fill using a pattern with holes
-  const applyEraserPaths = useCallback((elementId: number, rect: any, paths: EraserPath[], bgColor: { r: number; g: number; b: number }) => {
-    if (!fabricModule || !rect) return;
-
-    const currentCanvas = fabricCanvasRef.current;
-    if (!isCanvasValid(currentCanvas)) return;
-
-    if (!paths || paths.length === 0) {
-      // Restore solid fill
-      rect.set({ fill: `rgb(${bgColor.r}, ${bgColor.g}, ${bgColor.b})` });
+    const fillColor = bgColor ?? { r: 255, g: 255, b: 255 };
+    if (!paths.length) {
+      rect.set({ fill: rgbToString(fillColor) });
       rect.dirty = true;
-      currentCanvas.renderAll();
       return;
     }
 
-    const rectWidth = rect.width || 0;
-    const rectHeight = rect.height || 0;
-    const rectLeft = rect.left || 0;
-    const rectTop = rect.top || 0;
-
-    // Create an off-screen canvas to draw the mask
+    const rectWidth = Math.max(1, Math.round(rect.width || 0));
+    const rectHeight = Math.max(1, Math.round(rect.height || 0));
+    const scale = imageScaleRef.current || 1;
     const offCanvas = document.createElement('canvas');
     offCanvas.width = rectWidth;
     offCanvas.height = rectHeight;
     const ctx = offCanvas.getContext('2d');
     if (!ctx) return;
 
-    // Fill with background color
-    ctx.fillStyle = `rgb(${bgColor.r}, ${bgColor.g}, ${bgColor.b})`;
+    ctx.fillStyle = rgbToString(fillColor);
     ctx.fillRect(0, 0, rectWidth, rectHeight);
-
-    // Cut out circles (make them transparent)
     ctx.globalCompositeOperation = 'destination-out';
+
     paths.forEach((path) => {
       ctx.beginPath();
-      ctx.arc(path.x - rectLeft, path.y - rectTop, path.radius, 0, Math.PI * 2);
+      ctx.arc(path.x * scale, path.y * scale, path.radius * scale, 0, Math.PI * 2);
       ctx.fill();
     });
 
-    // Create a pattern from the canvas
-    const pattern = new fabricModule.Pattern({
-      source: offCanvas,
-      repeat: 'no-repeat',
+    rect.set({
+      fill: new fabricModule.Pattern({
+        source: offCanvas,
+        repeat: 'no-repeat',
+      }),
     });
-
-    rect.set({ fill: pattern });
     rect.dirty = true;
-    currentCanvas.renderAll();
   }, []);
 
-  // Apply eraser paths from element state
+  const commitTextboxToModel = useCallback((elementId: number) => {
+    if (suppressCanvasWritebackRef.current) return;
+
+    const binding = runtimeBindingsRef.current.get(elementId);
+    if (!binding) return;
+
+    const scale = imageScaleRef.current || 1;
+    const { textObj } = binding;
+    const nextBbox = {
+      x: roundToImagePixel((textObj.left || 0) / scale),
+      y: roundToImagePixel((textObj.top || 0) / scale),
+      width: roundToImagePixel(textObj.getScaledWidth() / scale),
+      height: roundToImagePixel(textObj.getScaledHeight() / scale),
+    };
+
+    updateElement(elementId, {
+      text: textObj.text ?? '',
+      bbox: nextBbox,
+      fontSize: Math.max(1, roundToImagePixel(((textObj.fontSize || 0) * (textObj.scaleY || 1)) / scale)),
+    });
+  }, [updateElement]);
+
   useEffect(() => {
-    if (!fabricReady || !fabricModule) return;
+    if (!fabricReady || !fabricModule || !fontLoaded) return;
+
     const currentCanvas = fabricCanvasRef.current;
     if (!isCanvasValid(currentCanvas)) return;
 
-    textElements.forEach((element) => {
-      if (element.fabricBgRect) {
-        applyEraserPaths(element.id, element.fabricBgRect, element.eraserPaths, element.bgColor);
+    const regions = pageModel?.regions ?? [];
+    const activeIds = new Set(regions.map((region) => region.id));
+
+    suppressCanvasWritebackRef.current = true;
+    try {
+      for (const [id, binding] of runtimeBindingsRef.current.entries()) {
+        if (activeIds.has(id)) continue;
+        if (binding.bgRect) currentCanvas.remove(binding.bgRect);
+        currentCanvas.remove(binding.textObj);
+        runtimeBindingsRef.current.delete(id);
       }
-    });
-  }, [fabricReady, textElements, applyEraserPaths]);
 
-  // Use refs for values needed in event handlers to avoid stale closures
-  const textElementsRef = useRef(textElements);
-  const eraserSizeRef = useRef(eraserSize);
+      for (const region of regions) {
+        let binding = runtimeBindingsRef.current.get(region.id);
+        if (!binding) {
+          const textObj = createTextObject(fabricModule, region, imageScaleRef.current);
+          textObj.on('modified', () => commitTextboxToModel(region.id));
+          textObj.on('editing:exited', () => commitTextboxToModel(region.id));
+          currentCanvas.add(textObj);
+          binding = { textObj };
+          runtimeBindingsRef.current.set(region.id, binding);
+        }
 
-  useEffect(() => {
-    textElementsRef.current = textElements;
-  }, [textElements]);
+        syncTextObject(binding.textObj, region, imageScaleRef.current);
 
-  useEffect(() => {
-    eraserSizeRef.current = eraserSize;
-  }, [eraserSize]);
+        if (region.showBackground) {
+          if (!binding.bgRect) {
+            binding.bgRect = createBackgroundRect(fabricModule, region, imageScaleRef.current);
+            currentCanvas.add(binding.bgRect);
+          }
+          syncBackgroundRect(binding.bgRect, region, imageScaleRef.current);
+          applyEraserPaths(binding.bgRect, region.eraserPaths, region.bgColor);
+          currentCanvas.sendObjectToBack(binding.bgRect);
+        } else if (binding.bgRect) {
+          currentCanvas.remove(binding.bgRect);
+          binding.bgRect = undefined;
+        }
 
-  // Handle editor mode changes
+        (currentCanvas as any).bringObjectToFront?.(binding.textObj);
+      }
+    } finally {
+      suppressCanvasWritebackRef.current = false;
+    }
+
+    currentCanvas.renderAll();
+  }, [applyEraserPaths, commitTextboxToModel, fabricReady, fontLoaded, pageModel]);
+
   useEffect(() => {
     const currentCanvas = fabricCanvasRef.current;
     if (!isCanvasValid(currentCanvas)) return;
 
     if (editorMode === 'eraser') {
-      // Disable selection in eraser mode
       currentCanvas.selection = false;
       currentCanvas.discardActiveObject();
       currentCanvas.forEachObject((obj: any) => {
@@ -392,27 +313,24 @@ export function CanvasEditor() {
         obj.evented = false;
       });
 
-      // Hide default cursor
       currentCanvas.defaultCursor = 'none';
       currentCanvas.hoverCursor = 'none';
 
-      // Find which element's background rect contains the pointer
       const findElementAtPointer = (pointer: { x: number; y: number }) => {
-        const elements = textElementsRef.current;
-        for (const [id, element] of elements) {
-          if (!element.fabricBgRect || !element.showBackground) continue;
+        for (const [id, binding] of runtimeBindingsRef.current.entries()) {
+          if (!binding.bgRect) continue;
 
-          const rect = element.fabricBgRect;
-          const rectLeft = rect.left || 0;
-          const rectTop = rect.top || 0;
-          const rectRight = rectLeft + (rect.width || 0);
-          const rectBottom = rectTop + (rect.height || 0);
+          const rect = binding.bgRect;
+          const left = rect.left || 0;
+          const top = rect.top || 0;
+          const right = left + rect.getScaledWidth();
+          const bottom = top + rect.getScaledHeight();
 
-          if (pointer.x >= rectLeft && pointer.x <= rectRight &&
-              pointer.y >= rectTop && pointer.y <= rectBottom) {
-            return { id, element };
+          if (pointer.x >= left && pointer.x <= right && pointer.y >= top && pointer.y <= bottom) {
+            return { id, rect };
           }
         }
+
         return null;
       };
 
@@ -420,14 +338,19 @@ export function CanvasEditor() {
         const found = findElementAtPointer(pointer);
         if (!found) return;
 
-        const { id, element } = found;
+        const region = pageModelRef.current?.regions.find((item) => item.id === found.id);
+        if (!region) return;
+
+        const scale = imageScaleRef.current || 1;
         const newPath: EraserPath = {
-          x: pointer.x,
-          y: pointer.y,
-          radius: eraserSizeRef.current / 2,
+          x: roundToImagePixel((pointer.x - (found.rect.left || 0)) / scale),
+          y: roundToImagePixel((pointer.y - (found.rect.top || 0)) / scale),
+          radius: roundToImagePixel((eraserSizeRef.current / 2) / scale),
         };
-        const newPaths = [...(element.eraserPaths || []), newPath];
-        updateElement(id, { eraserPaths: newPaths });
+
+        updateElement(found.id, {
+          eraserPaths: [...region.eraserPaths, newPath],
+        });
       };
 
       const handleMouseDown = (e: any) => {
@@ -438,11 +361,10 @@ export function CanvasEditor() {
       };
 
       const handleMouseMove = (e: any) => {
-        if (e.pointer) {
-          setCursorPos({ x: e.pointer.x, y: e.pointer.y });
-          if (isDrawingRef.current) {
-            doEraserDraw(e.pointer);
-          }
+        if (!e.pointer) return;
+        setCursorPos({ x: e.pointer.x, y: e.pointer.y });
+        if (isDrawingRef.current) {
+          doEraserDraw(e.pointer);
         }
       };
 
@@ -460,56 +382,47 @@ export function CanvasEditor() {
       currentCanvas.on('mouse:out', handleMouseOut);
 
       return () => {
-        if (isCanvasValid(fabricCanvasRef.current)) {
-          fabricCanvasRef.current.off('mouse:down', handleMouseDown);
-          fabricCanvasRef.current.off('mouse:move', handleMouseMove);
-          fabricCanvasRef.current.off('mouse:up', handleMouseUp);
-          fabricCanvasRef.current.off('mouse:out', handleMouseOut);
-          // Restore selection
-          fabricCanvasRef.current.selection = true;
-          fabricCanvasRef.current.forEachObject((obj: any) => {
-            if (obj._prevSelectable !== undefined) {
-              obj.selectable = obj._prevSelectable;
-              obj.evented = true;
-              delete obj._prevSelectable;
-            }
-          });
-        }
+        if (!isCanvasValid(fabricCanvasRef.current)) return;
+
+        fabricCanvasRef.current.off('mouse:down', handleMouseDown);
+        fabricCanvasRef.current.off('mouse:move', handleMouseMove);
+        fabricCanvasRef.current.off('mouse:up', handleMouseUp);
+        fabricCanvasRef.current.off('mouse:out', handleMouseOut);
+        fabricCanvasRef.current.selection = true;
+        fabricCanvasRef.current.forEachObject((obj: any) => {
+          if (obj._prevSelectable !== undefined) {
+            obj.selectable = obj._prevSelectable;
+            obj.evented = true;
+            delete obj._prevSelectable;
+          }
+        });
         setCursorPos(null);
       };
-    } else {
-      // Restore normal cursors and selection
-      currentCanvas.selection = true;
-      currentCanvas.forEachObject((obj: any) => {
-        if (obj._prevSelectable !== undefined) {
-          obj.selectable = obj._prevSelectable;
-          obj.evented = true;
-          delete obj._prevSelectable;
-        }
-      });
-      currentCanvas.defaultCursor = 'default';
-      currentCanvas.hoverCursor = 'move';
-      setCursorPos(null);
     }
+
+    currentCanvas.selection = true;
+    currentCanvas.forEachObject((obj: any) => {
+      if (obj._prevSelectable !== undefined) {
+        obj.selectable = obj._prevSelectable;
+        obj.evented = true;
+        delete obj._prevSelectable;
+      }
+    });
+    currentCanvas.defaultCursor = 'default';
+    currentCanvas.hoverCursor = 'move';
+    setCursorPos(null);
   }, [editorMode, updateElement]);
 
-  // Handle canvas selection events
   useEffect(() => {
-    if (!fabricReady || !fabricModule) return;
+    if (!fabricReady) return;
 
     const currentCanvas = fabricCanvasRef.current;
     if (!isCanvasValid(currentCanvas)) return;
 
     const handleSelection = (e: any) => {
       const activeObject = e.selected?.[0];
-      if (activeObject) {
-        const data = activeObject.get('data') as { detectionIndex?: number };
-        if (data?.detectionIndex !== undefined) {
-          setSelectedElement(data.detectionIndex);
-        }
-      } else {
-        setSelectedElement(null);
-      }
+      const elementId = activeObject?.get?.('data')?.elementId;
+      setSelectedElement(typeof elementId === 'number' ? elementId : null);
     };
 
     const handleClear = () => {
@@ -521,21 +434,18 @@ export function CanvasEditor() {
     currentCanvas.on('selection:cleared', handleClear);
 
     return () => {
-      if (isCanvasValid(fabricCanvasRef.current)) {
-        fabricCanvasRef.current.off('selection:created', handleSelection);
-        fabricCanvasRef.current.off('selection:updated', handleSelection);
-        fabricCanvasRef.current.off('selection:cleared', handleClear);
-      }
+      if (!isCanvasValid(fabricCanvasRef.current)) return;
+      fabricCanvasRef.current.off('selection:created', handleSelection);
+      fabricCanvasRef.current.off('selection:updated', handleSelection);
+      fabricCanvasRef.current.off('selection:cleared', handleClear);
     };
   }, [fabricReady, setSelectedElement]);
 
-  // Handle compare mode - hide/show all objects
   useEffect(() => {
     const currentCanvas = fabricCanvasRef.current;
     if (!isCanvasValid(currentCanvas)) return;
 
-    const objects = currentCanvas.getObjects();
-    objects.forEach((obj: any) => {
+    currentCanvas.getObjects().forEach((obj: any) => {
       if (isComparing) {
         obj._wasVisible = obj.visible;
         obj.visible = false;
@@ -548,33 +458,24 @@ export function CanvasEditor() {
     currentCanvas.renderAll();
   }, [isComparing]);
 
-  // Handle zoom with mouse wheel on container
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
     const handleWheel = (e: WheelEvent) => {
-      // Only zoom when Ctrl/Cmd key is held
-      if (e.ctrlKey || e.metaKey) {
-        e.preventDefault();
-        const delta = e.deltaY;
-        let newZoom = viewportZoom * (0.999 ** delta);
+      if (!(e.ctrlKey || e.metaKey)) return;
 
-        // Clamp zoom
-        if (newZoom > 4) newZoom = 4;
-        if (newZoom < 0.25) newZoom = 0.25;
-
-        setViewportZoom(newZoom);
-      }
-      // Without Ctrl/Cmd, allow normal scroll
+      e.preventDefault();
+      let newZoom = viewportZoom * (0.999 ** e.deltaY);
+      newZoom = Math.min(Math.max(newZoom, 0.25), 4);
+      setViewportZoom(newZoom);
     };
 
     container.addEventListener('wheel', handleWheel, { passive: false });
-
     return () => {
       container.removeEventListener('wheel', handleWheel);
     };
-  }, [viewportZoom, setViewportZoom]);
+  }, [setViewportZoom, viewportZoom]);
 
   return (
     <div
@@ -589,7 +490,6 @@ export function CanvasEditor() {
         }}
       >
         <div ref={wrapperRef} className="relative">
-          {/* Eraser cursor overlay */}
           {editorMode === 'eraser' && cursorPos && (
             <div
               className="absolute pointer-events-none border-2 border-red-500 rounded-full bg-red-500/20"
@@ -603,11 +503,13 @@ export function CanvasEditor() {
           )}
         </div>
       </div>
+
       {isComparing && (
         <div className="absolute top-2 left-2 bg-black/70 text-white px-3 py-1 rounded text-sm z-10">
           Comparing with original
         </div>
       )}
+
       {isDetecting && (
         <div className="absolute inset-0 bg-black/40 flex items-center justify-center z-20 rounded-lg">
           <div className="text-center bg-white/90 rounded-lg p-6 shadow-lg">

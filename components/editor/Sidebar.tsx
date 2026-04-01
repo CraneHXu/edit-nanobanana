@@ -1,23 +1,34 @@
 "use client";
 
 import React from 'react';
-import { useEditorStore } from '@/store/editorStore';
 import { Eye, EyeOff, Square } from 'lucide-react';
+import { useEditorStore } from '@/store/editorStore';
 import { useI18n } from '@/lib/i18n';
 
 export function Sidebar() {
-  const { textElements, selectedElementId, setSelectedElement, toggleShowBackground, toggleShowText, canvas } = useEditorStore();
+  const {
+    pageModel,
+    selectedElementId,
+    setSelectedElement,
+    toggleShowBackground,
+    toggleShowText,
+    canvas,
+  } = useEditorStore();
   const { t } = useI18n();
 
-  const elements = Array.from(textElements.values());
+  const elements = pageModel?.regions ?? [];
 
   const handleSelectElement = (id: number) => {
     setSelectedElement(id);
 
-    // Also select in canvas
-    const element = textElements.get(id);
-    if (element?.fabricObject && canvas) {
-      canvas.setActiveObject(element.fabricObject);
+    if (!canvas) return;
+
+    const targetObject = canvas
+      .getObjects()
+      .find((obj: any) => obj.get?.('data')?.elementId === id);
+
+    if (targetObject) {
+      canvas.setActiveObject(targetObject);
       canvas.renderAll();
     }
   };
@@ -61,7 +72,6 @@ export function Sidebar() {
               }
             `}
           >
-            {/* Toggle buttons */}
             <div className="flex gap-1 flex-shrink-0">
               <button
                 onClick={(e) => handleToggleBackground(e, element.id)}

@@ -1,46 +1,38 @@
 /**
- * Editor State Management with Zustand
+ * Editor state management with a model-only text region store.
  */
 
 import { create } from 'zustand';
 import { OCRDetection } from '@/types/ocr';
-import { TextElement } from '@/types/canvas';
+import { PageModel, TextElement } from '@/types/canvas';
 
 export type EditorMode = 'select' | 'eraser';
 
+interface ImageMeta {
+  width: number;
+  height: number;
+}
+
 interface EditorState {
-  // Image data
   originalImage: string | null;
   imageFile: File | null;
-
-  // Detections and elements
-  detections: OCRDetection[];
-  textElements: Map<number, TextElement>;
-
-  // Canvas (using any to avoid SSR issues with fabric)
+  imageMeta: ImageMeta | null;
+  pageModel: PageModel | null;
   canvas: any | null;
-  canvasScale: number; // Scale factor for display (1/scale = export multiplier)
-
-  // Viewport zoom and pan
+  canvasScale: number;
   viewportZoom: number;
   viewportPan: { x: number; y: number };
-
-  // Selection
   selectedElementId: number | null;
-
-  // Editor mode
   editorMode: EditorMode;
   eraserSize: number;
-
-  // Compare mode
   isComparing: boolean;
-
-  // Loading states
   isLoading: boolean;
   isDetecting: boolean;
-
-  // Actions
+  sessionHydrated: boolean;
   loadImage: (file: File) => Promise<void>;
+  initializeFromDetections: (detections: OCRDetection[]) => void;
+  hydrateSession: (payload: { originalImage: string; imageMeta: ImageMeta; pageModel: PageModel }) => void;
+  markSessionHydrated: () => void;
   setCanvas: (canvas: any) => void;
   setCanvasScale: (scale: number) => void;
   setViewportZoom: (zoom: number) => void;
@@ -48,9 +40,8 @@ interface EditorState {
   zoomIn: () => void;
   zoomOut: () => void;
   resetZoom: () => void;
-  setDetections: (detections: OCRDetection[]) => void;
-  setTextElements: (elements: Map<number, TextElement>) => void;
   updateElement: (id: number, updates: Partial<TextElement>) => void;
+  replaceElements: (elements: TextElement[]) => void;
   toggleShowBackground: (id: number) => void;
   toggleShowText: (id: number) => void;
   resetElement: (id: number) => void;
@@ -63,12 +54,79 @@ interface EditorState {
   reset: () => void;
 }
 
+async function readImageData(file: File): Promise<{ dataUrl: string; width: number; height: number }> {
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (event) => resolve(event.target?.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+
+  const dimensions = await new Promise<ImageMeta>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve({ width: image.width, height: image.height });
+    image.onerror = reject;
+    image.src = dataUrl;
+  });
+
+  return { dataUrl, ...dimensions };
+}
+
+function buildOriginalSnapshot(region: Omit<TextElement, 'original'>): TextElement['original'] {
+  return {
+    bbox: { ...region.bbox },
+    text: region.text,
+    fontFamily: region.fontFamily,
+    fontSize: region.fontSize,
+    fontWeight: region.fontWeight,
+    textAlign: region.textAlign,
+    fontColor: { ...region.fontColor },
+    textColorRaw: { ...region.textColorRaw },
+    textColorMode: region.textColorMode,
+    bgColor: region.bgColor ? { ...region.bgColor } : null,
+    bgMode: region.bgMode,
+    showBackground: region.showBackground,
+    showText: region.showText,
+  };
+}
+
+function createTextElement(detection: OCRDetection): TextElement {
+  const base: Omit<TextElement, 'original'> = {
+    id: detection.index,
+    bbox: { ...detection.bounds },
+    polygon: detection.bbox.map(([x, y]) => [x, y] as [number, number]),
+    text: detection.text,
+    confidence: detection.confidence,
+    fontFamily: 'Noto Sans SC',
+    fontSize: detection.fontSize,
+    fontWeight: 'normal',
+    textAlign: 'left',
+    fontColor: { ...detection.textColor },
+    textColorRaw: { ...detection.textColor },
+    textColorMode: 'auto',
+    textColorQuantized: { ...detection.textColor },
+    bgColor: { ...detection.bgColor },
+    bgMode: 'fill',
+    showBackground: true,
+    showText: true,
+    eraserPaths: [],
+  };
+
+  return {
+    ...base,
+    original: buildOriginalSnapshot(base),
+  };
+}
+
+function replaceRegion(regions: TextElement[], id: number, updater: (region: TextElement) => TextElement): TextElement[] {
+  return regions.map((region) => (region.id === id ? updater(region) : region));
+}
+
 export const useEditorStore = create<EditorState>((set, get) => ({
-  // Initial state
   originalImage: null,
   imageFile: null,
-  detections: [],
-  textElements: new Map(),
+  imageMeta: null,
+  pageModel: null,
   canvas: null,
   canvasScale: 1,
   viewportZoom: 1,
@@ -79,48 +137,69 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   isComparing: false,
   isLoading: false,
   isDetecting: false,
+  sessionHydrated: false,
 
-  // Actions
   loadImage: async (file: File) => {
     set({ isLoading: true });
     try {
-      const reader = new FileReader();
-      const imageData = await new Promise<string>((resolve, reject) => {
-        reader.onload = (e) => resolve(e.target?.result as string);
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
-      });
-
+      const { dataUrl, width, height } = await readImageData(file);
       set({
-        originalImage: imageData,
+        originalImage: dataUrl,
         imageFile: file,
-        isLoading: false
+        imageMeta: { width, height },
+        pageModel: null,
+        canvasScale: 1,
+        isLoading: false,
+        selectedElementId: null,
+        isComparing: false,
       });
     } catch (error) {
       console.error('Failed to load image:', error);
       set({ isLoading: false });
+      throw error;
     }
   },
 
-  setCanvas: (canvas: any) => {
-    set({ canvas });
+  initializeFromDetections: (detections: OCRDetection[]) => {
+    const { imageMeta, imageFile } = get();
+    if (!imageMeta) {
+      throw new Error('Image metadata is missing');
+    }
+
+    set({
+      pageModel: {
+        imageId: imageFile?.name || `image-${Date.now()}`,
+        originalWidth: imageMeta.width,
+        originalHeight: imageMeta.height,
+        regions: detections.map(createTextElement),
+        cleanLayer: null,
+      },
+      selectedElementId: detections[0]?.index ?? null,
+    });
   },
 
-  setCanvasScale: (scale: number) => {
-    set({ canvasScale: scale });
+  hydrateSession: ({ originalImage, imageMeta, pageModel }) => {
+    set({
+      originalImage,
+      imageMeta,
+      imageFile: null,
+      pageModel,
+      selectedElementId: pageModel.regions[0]?.id ?? null,
+      sessionHydrated: true,
+    });
   },
+
+  markSessionHydrated: () => set({ sessionHydrated: true }),
+
+  setCanvas: (canvas: any) => set({ canvas }),
+  setCanvasScale: (scale: number) => set({ canvasScale: scale }),
 
   setViewportZoom: (zoom: number) => {
-    // Clamp zoom between 0.25 and 4
     const clampedZoom = Math.min(Math.max(zoom, 0.25), 4);
     set({ viewportZoom: clampedZoom });
-    // Don't use Fabric's setZoom - we use CSS transform instead
   },
 
-  setViewportPan: (pan: { x: number; y: number }) => {
-    set({ viewportPan: pan });
-    // Pan is handled by scroll container
-  },
+  setViewportPan: (pan: { x: number; y: number }) => set({ viewportPan: pan }),
 
   zoomIn: () => {
     const { viewportZoom, setViewportZoom } = get();
@@ -132,171 +211,108 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     setViewportZoom(viewportZoom / 1.2);
   },
 
-  resetZoom: () => {
-    set({ viewportZoom: 1, viewportPan: { x: 0, y: 0 } });
-  },
-
-  setDetections: (detections: OCRDetection[]) => {
-    set({ detections });
-  },
-
-  setTextElements: (elements: Map<number, TextElement>) => {
-    set({ textElements: elements });
-  },
+  resetZoom: () => set({ viewportZoom: 1, viewportPan: { x: 0, y: 0 } }),
 
   updateElement: (id: number, updates: Partial<TextElement>) => {
-    const { textElements } = get();
-    const element = textElements.get(id);
-    if (element) {
-      const updatedElement = { ...element, ...updates };
-      const newMap = new Map(textElements);
-      newMap.set(id, updatedElement);
-      set({ textElements: newMap });
-    }
+    const { pageModel } = get();
+    if (!pageModel) return;
+
+    set({
+      pageModel: {
+        ...pageModel,
+        regions: replaceRegion(pageModel.regions, id, (region) => ({ ...region, ...updates })),
+      },
+    });
+  },
+
+  replaceElements: (elements: TextElement[]) => {
+    const { pageModel } = get();
+    if (!pageModel) return;
+    set({
+      pageModel: {
+        ...pageModel,
+        regions: elements,
+      },
+    });
   },
 
   toggleShowBackground: (id: number) => {
-    const { textElements } = get();
-    const element = textElements.get(id);
-    if (element) {
-      const newMap = new Map(textElements);
-      newMap.set(id, { ...element, showBackground: !element.showBackground });
-      set({ textElements: newMap });
-    }
+    const { pageModel } = get();
+    if (!pageModel) return;
+
+    set({
+      pageModel: {
+        ...pageModel,
+        regions: replaceRegion(pageModel.regions, id, (region) => ({ ...region, showBackground: !region.showBackground })),
+      },
+    });
   },
 
   toggleShowText: (id: number) => {
-    const { textElements } = get();
-    const element = textElements.get(id);
-    if (element) {
-      const newMap = new Map(textElements);
-      newMap.set(id, { ...element, showText: !element.showText });
-      set({ textElements: newMap });
-    }
+    const { pageModel } = get();
+    if (!pageModel) return;
+
+    set({
+      pageModel: {
+        ...pageModel,
+        regions: replaceRegion(pageModel.regions, id, (region) => ({ ...region, showText: !region.showText })),
+      },
+    });
   },
 
   resetElement: (id: number) => {
-    const { textElements, canvas } = get();
-    const element = textElements.get(id);
-    if (element && canvas) {
-      const { detection, originalTransform } = element;
+    const { pageModel } = get();
+    if (!pageModel) return;
 
-      // Reset fabric object transform
-      if (element.fabricObject) {
-        element.fabricObject.set({
-          left: originalTransform.left,
-          top: originalTransform.top,
-          scaleX: originalTransform.scaleX,
-          scaleY: originalTransform.scaleY,
-          angle: originalTransform.angle,
-          text: detection.text,
-          fontSize: detection.fontSize,
-          fill: `rgb(${detection.textColor.r}, ${detection.textColor.g}, ${detection.textColor.b})`,
-          fontFamily: 'Noto Sans SC',
-          width: detection.bounds.width,
-        });
-        element.fabricObject.setCoords();
-      }
-
-      // Reset element state
-      const newMap = new Map(textElements);
-      newMap.set(id, {
-        ...element,
-        text: detection.text,
-        fontFamily: 'Noto Sans SC',
-        fontSize: detection.fontSize,
-        fontColor: detection.textColor,
-        bgColor: detection.bgColor,
-        showBackground: true,
-        showText: true,
-        eraserPaths: [], // Clear eraser paths
-      });
-      set({ textElements: newMap });
-
-      // Clear clipPath on the background rect
-      if (element.fabricBgRect) {
-        element.fabricBgRect.clipPath = undefined;
-      }
-
-      canvas.renderAll();
-    }
+    set({
+      pageModel: {
+        ...pageModel,
+        regions: replaceRegion(pageModel.regions, id, (region) => ({
+          ...region,
+          ...region.original,
+          bbox: { ...region.original.bbox },
+          fontColor: { ...region.original.fontColor },
+          textColorRaw: { ...region.original.textColorRaw },
+          bgColor: region.original.bgColor ? { ...region.original.bgColor } : null,
+          eraserPaths: [],
+        })),
+      },
+    });
   },
 
   restoreAll: () => {
-    const { textElements, canvas } = get();
-    if (!canvas) return;
+    const { pageModel } = get();
+    if (!pageModel) return;
 
-    const newMap = new Map<number, TextElement>();
-
-    textElements.forEach((element, id) => {
-      const { detection, originalTransform } = element;
-
-      // Reset fabric object transform
-      if (element.fabricObject) {
-        element.fabricObject.set({
-          left: originalTransform.left,
-          top: originalTransform.top,
-          scaleX: originalTransform.scaleX,
-          scaleY: originalTransform.scaleY,
-          angle: originalTransform.angle,
-          text: detection.text,
-          fontSize: detection.fontSize,
-          fill: `rgb(${detection.textColor.r}, ${detection.textColor.g}, ${detection.textColor.b})`,
-          fontFamily: 'Noto Sans SC',
-          visible: true,
-        });
-        element.fabricObject.setCoords();
-      }
-
-      // Clear clipPath on background rect
-      if (element.fabricBgRect) {
-        element.fabricBgRect.clipPath = undefined;
-      }
-
-      newMap.set(id, {
-        ...element,
-        text: detection.text,
-        fontFamily: 'Noto Sans SC',
-        fontSize: detection.fontSize,
-        fontColor: detection.textColor,
-        bgColor: detection.bgColor,
-        showBackground: true,
-        showText: true,
-        eraserPaths: [], // Clear eraser paths
-      });
+    set({
+      pageModel: {
+        ...pageModel,
+        regions: pageModel.regions.map((region) => ({
+          ...region,
+          ...region.original,
+          bbox: { ...region.original.bbox },
+          fontColor: { ...region.original.fontColor },
+          textColorRaw: { ...region.original.textColorRaw },
+          bgColor: region.original.bgColor ? { ...region.original.bgColor } : null,
+          eraserPaths: [],
+        })),
+      },
+      selectedElementId: pageModel.regions[0]?.id ?? null,
     });
-
-    set({ textElements: newMap });
-    canvas.renderAll();
   },
 
-  setSelectedElement: (id: number | null) => {
-    set({ selectedElementId: id });
-  },
-
-  setIsDetecting: (isDetecting: boolean) => {
-    set({ isDetecting });
-  },
-
-  setEditorMode: (mode: EditorMode) => {
-    set({ editorMode: mode });
-  },
-
-  setEraserSize: (size: number) => {
-    set({ eraserSize: size });
-  },
-
-  setIsComparing: (isComparing: boolean) => {
-    set({ isComparing });
-  },
+  setSelectedElement: (id: number | null) => set({ selectedElementId: id }),
+  setIsDetecting: (isDetecting: boolean) => set({ isDetecting }),
+  setEditorMode: (mode: EditorMode) => set({ editorMode: mode }),
+  setEraserSize: (size: number) => set({ eraserSize: size }),
+  setIsComparing: (isComparing: boolean) => set({ isComparing }),
 
   reset: () => {
-    // Don't dispose canvas here - let the CanvasEditor component handle cleanup on unmount
     set({
       originalImage: null,
       imageFile: null,
-      detections: [],
-      textElements: new Map(),
+      imageMeta: null,
+      pageModel: null,
       canvas: null,
       canvasScale: 1,
       viewportZoom: 1,

@@ -1,29 +1,22 @@
 /**
- * Fabric.js Canvas Utility Functions (v6 API)
- * For image text editor - creates text overlays for editing
+ * Fabric.js canvas utilities for the model-driven editor.
  */
 
-import { OCRDetection, RGBColor } from '@/types/ocr';
-import type { Rect, Group, Canvas, FabricText, Textbox } from 'fabric';
+import { BoundingBox, RGBColor } from '@/types/ocr';
+import type { TextElement } from '@/types/canvas';
+import type { Canvas, Rect, Textbox } from 'fabric';
 
-/**
- * Convert RGB color object to CSS string
- */
+export const BACKGROUND_EXPAND_FACTOR = 0.1;
+
 export function rgbToString(color: RGBColor): string {
   return `rgb(${color.r}, ${color.g}, ${color.b})`;
 }
 
-/**
- * Convert RGB color to hex string
- */
 export function rgbToHex(color: RGBColor): string {
   const toHex = (n: number) => n.toString(16).padStart(2, '0');
   return `#${toHex(color.r)}${toHex(color.g)}${toHex(color.b)}`;
 }
 
-/**
- * Convert hex string to RGB color
- */
 export function hexToRgb(hex: string): RGBColor {
   const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
   if (result) {
@@ -36,104 +29,29 @@ export function hexToRgb(hex: string): RGBColor {
   return { r: 0, g: 0, b: 0 };
 }
 
-/**
- * Create a text-only object for editing (no background)
- * The text is positioned at the detection location and can be dragged/edited
- * Uses Textbox for multi-line text wrapping support
- */
-export function createTextObject(
-  fabric: typeof import('fabric'),
-  detection: OCRDetection,
-  fontFamily: string = 'Arial'
-): Textbox {
-  const { bounds, text, textColor, fontSize } = detection;
-
-  // Create textbox object with width constraint for text wrapping
-  const textObj = new fabric.Textbox(text, {
-    fontSize: fontSize,
-    fill: rgbToString(textColor),
-    fontFamily: fontFamily,
-    left: bounds.x,
-    top: bounds.y,
-    width: bounds.width,
-    selectable: true,
-    hasControls: true,
-    hasBorders: true,
-    splitByGrapheme: true, // Better wrapping for CJK characters
-  });
-
-  // Store detection data as metadata
-  textObj.set('data', {
-    detectionIndex: detection.index,
-    originalText: text,
-    originalFontSize: fontSize,
-    originalBounds: bounds,
-    bgColor: detection.bgColor,
-    textColor: detection.textColor,
-  });
-
-  return textObj;
+export function scaleBoundingBox(bounds: BoundingBox, scale: number): BoundingBox {
+  return {
+    x: bounds.x * scale,
+    y: bounds.y * scale,
+    width: bounds.width * scale,
+    height: bounds.height * scale,
+  };
 }
 
-/**
- * Create a background rect to cover original text
- * Used when exporting with "cover original" option
- */
-export function createBackgroundRect(
-  fabric: typeof import('fabric'),
-  bounds: { x: number; y: number; width: number; height: number },
-  bgColor: RGBColor
-): Rect {
-  // Expand bounds slightly to fully cover original text
-  const expandFactor = 0.1;
-  const expandX = bounds.width * expandFactor;
-  const expandY = bounds.height * expandFactor;
+export function expandBoundingBox(bounds: BoundingBox): BoundingBox {
+  const expandX = bounds.width * BACKGROUND_EXPAND_FACTOR;
+  const expandY = bounds.height * BACKGROUND_EXPAND_FACTOR;
 
-  const rect = new fabric.Rect({
-    left: bounds.x - expandX,
-    top: bounds.y - expandY,
+  return {
+    x: bounds.x - expandX,
+    y: bounds.y - expandY,
     width: bounds.width + expandX * 2,
     height: bounds.height + expandY * 2,
-    fill: rgbToString(bgColor),
-    selectable: false,
-    evented: false,
-  });
-
-  return rect;
+  };
 }
 
-/**
- * Update background rect color
- */
-export function updateBackgroundRectColor(
-  rect: Rect,
-  color: RGBColor
-): void {
-  rect.set({ fill: rgbToString(color) });
-}
-
-/**
- * Update text content in a fabric text object
- */
-export function updateTextContent(
-  textObj: FabricText,
-  newText: string
-): void {
-  textObj.set({ text: newText });
-  textObj.setCoords();
-}
-
-/**
- * Update font family in a fabric text object
- */
-export function updateTextFont(
-  textObj: FabricText,
-  fontFamily: string
-): void {
-  textObj.set({ fontFamily });
-  // Force fabric to recalculate text dimensions with new font
+function refreshTextboxLayout(textObj: Textbox): void {
   (textObj as any).dirty = true;
-  // Clear any cached rendering
   if (typeof (textObj as any)._clearCache === 'function') {
     (textObj as any)._clearCache();
   }
@@ -143,54 +61,78 @@ export function updateTextFont(
   textObj.setCoords();
 }
 
-/**
- * Update font size in a fabric text object
- */
-export function updateTextFontSize(
-  textObj: FabricText,
-  fontSize: number
-): void {
-  textObj.set({ fontSize });
-  textObj.setCoords();
+export function createTextObject(
+  fabric: typeof import('fabric'),
+  region: TextElement,
+  scale: number,
+): Textbox {
+  const textObj = new fabric.Textbox(region.text, {
+    selectable: true,
+    hasControls: true,
+    hasBorders: true,
+    lockRotation: true,
+    splitByGrapheme: true,
+  });
+
+  textObj.set('data', {
+    elementId: region.id,
+  });
+
+  syncTextObject(textObj, region, scale);
+  return textObj;
 }
 
-/**
- * Update text color in a fabric text object
- */
-export function updateTextColor(
-  textObj: FabricText,
-  color: RGBColor
-): void {
-  textObj.set({ fill: rgbToString(color) });
-  textObj.setCoords();
+export function createBackgroundRect(
+  fabric: typeof import('fabric'),
+  region: TextElement,
+  scale: number,
+): Rect {
+  const rect = new fabric.Rect({
+    selectable: false,
+    evented: false,
+  });
+
+  syncBackgroundRect(rect, region, scale);
+  return rect;
 }
 
-/**
- * Update all text properties at once
- */
-export function updateTextProperties(
-  textObj: FabricText,
-  options: {
-    text?: string;
-    fontFamily?: string;
-    fontSize?: number;
-    color?: RGBColor;
-  }
-): void {
-  if (options.text !== undefined) textObj.set({ text: options.text });
-  if (options.fontFamily !== undefined) textObj.set({ fontFamily: options.fontFamily });
-  if (options.fontSize !== undefined) textObj.set({ fontSize: options.fontSize });
-  if (options.color !== undefined) textObj.set({ fill: rgbToString(options.color) });
-  textObj.setCoords();
+export function syncTextObject(textObj: Textbox, region: TextElement, scale: number): void {
+  const bounds = scaleBoundingBox(region.bbox, scale);
+
+  textObj.set({
+    left: bounds.x,
+    top: bounds.y,
+    width: Math.max(1, bounds.width),
+    text: region.text,
+    fontFamily: region.fontFamily,
+    fontWeight: region.fontWeight,
+    textAlign: region.textAlign,
+    fontSize: Math.max(1, region.fontSize * scale),
+    fill: rgbToString(region.fontColor),
+    visible: region.showText,
+    scaleX: 1,
+    scaleY: 1,
+    angle: 0,
+  });
+
+  refreshTextboxLayout(textObj);
 }
 
-/**
- * Export canvas as PNG with original resolution
- * Background rects are already on canvas for elements in 'replace' mode
- * @param canvas - The fabric canvas
- * @param scale - The display scale factor (canvas was scaled down by this factor)
- * @param filename - Output filename
- */
+export function syncBackgroundRect(rect: Rect, region: TextElement, scale: number): void {
+  const fillColor = region.bgColor ?? { r: 255, g: 255, b: 255 };
+  const bounds = scaleBoundingBox(expandBoundingBox(region.original.bbox), scale);
+
+  rect.set({
+    left: bounds.x,
+    top: bounds.y,
+    width: Math.max(1, bounds.width),
+    height: Math.max(1, bounds.height),
+    fill: rgbToString(fillColor),
+    visible: region.showBackground,
+  });
+  rect.setCoords();
+}
+
 export function exportCanvasAsPNG(
   canvas: Canvas,
   scale: number = 1,
@@ -200,7 +142,6 @@ export function exportCanvasAsPNG(
     throw new Error('Canvas is not initialized');
   }
 
-  // Use 1/scale as multiplier to restore original resolution
   const multiplier = scale > 0 ? 1 / scale : 1;
 
   const dataURL = canvas.toDataURL({
@@ -209,7 +150,6 @@ export function exportCanvasAsPNG(
     multiplier: multiplier,
   });
 
-  // Create download link
   const link = document.createElement('a');
   link.download = filename;
   link.href = dataURL;

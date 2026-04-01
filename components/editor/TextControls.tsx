@@ -1,22 +1,21 @@
 "use client";
 
 import React, { useEffect, useState } from 'react';
-import { useEditorStore } from '@/store/editorStore';
-import { FontSelector } from './FontSelector';
-import { Slider } from '@/components/ui/slider';
-import { Input } from '@/components/ui/input';
+import { Eye, EyeOff, RotateCcw, Square } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { RotateCcw, Eye, EyeOff, Square, Type } from 'lucide-react';
-import { updateTextContent, updateTextFont, updateTextFontSize, updateTextColor, rgbToHex, hexToRgb } from '@/lib/fabric-utils';
+import { Slider } from '@/components/ui/slider';
+import { FontSelector } from './FontSelector';
+import { useEditorStore } from '@/store/editorStore';
+import { rgbToHex, hexToRgb } from '@/lib/fabric-utils';
 import { RGBColor } from '@/types/ocr';
 import { useI18n } from '@/lib/i18n';
 
 export function TextControls() {
   const {
     selectedElementId,
-    textElements,
-    canvas,
+    pageModel,
     updateElement,
     toggleShowBackground,
     toggleShowText,
@@ -25,7 +24,7 @@ export function TextControls() {
   const { t } = useI18n();
 
   const selectedElement = selectedElementId !== null
-    ? textElements.get(selectedElementId)
+    ? pageModel?.regions.find((region) => region.id === selectedElementId) ?? null
     : null;
 
   const [localText, setLocalText] = useState('');
@@ -35,16 +34,15 @@ export function TextControls() {
   const [localFontColor, setLocalFontColor] = useState<RGBColor>({ r: 0, g: 0, b: 0 });
   const [localBgColor, setLocalBgColor] = useState<RGBColor>({ r: 255, g: 255, b: 255 });
 
-  // Sync local state with selected element
   useEffect(() => {
-    if (selectedElement) {
-      setLocalText(selectedElement.text);
-      setLocalFontSize(selectedElement.fontSize);
-      setLocalFontSizeInput(String(Math.round(selectedElement.fontSize)));
-      setLocalFontFamily(selectedElement.fontFamily);
-      setLocalFontColor(selectedElement.fontColor || selectedElement.detection.textColor);
-      setLocalBgColor(selectedElement.bgColor || selectedElement.detection.bgColor);
-    }
+    if (!selectedElement) return;
+
+    setLocalText(selectedElement.text);
+    setLocalFontSize(selectedElement.fontSize);
+    setLocalFontSizeInput(String(Math.round(selectedElement.fontSize)));
+    setLocalFontFamily(selectedElement.fontFamily);
+    setLocalFontColor(selectedElement.fontColor);
+    setLocalBgColor(selectedElement.bgColor ?? { r: 255, g: 255, b: 255 });
   }, [selectedElement]);
 
   if (!selectedElement) {
@@ -57,35 +55,19 @@ export function TextControls() {
 
   const handleTextChange = (newText: string) => {
     setLocalText(newText);
-    if (selectedElement.fabricObject && canvas) {
-      updateTextContent(selectedElement.fabricObject as any, newText);
-      updateElement(selectedElement.id, { text: newText });
-      canvas.renderAll();
-    }
+    updateElement(selectedElement.id, { text: newText });
   };
 
   const handleFontChange = (newFont: string) => {
     setLocalFontFamily(newFont);
-    if (selectedElement.fabricObject && canvas) {
-      updateTextFont(selectedElement.fabricObject as any, newFont);
-      updateElement(selectedElement.id, { fontFamily: newFont });
-      canvas.renderAll();
-      // Force re-render after next frame to ensure font is applied on canvas
-      requestAnimationFrame(() => {
-        canvas.renderAll();
-      });
-    }
+    updateElement(selectedElement.id, { fontFamily: newFont });
   };
 
   const handleFontSizeChange = (value: number[]) => {
     const newSize = value[0];
     setLocalFontSize(newSize);
     setLocalFontSizeInput(String(Math.round(newSize)));
-    if (selectedElement.fabricObject && canvas) {
-      updateTextFontSize(selectedElement.fabricObject as any, newSize);
-      updateElement(selectedElement.id, { fontSize: newSize });
-      canvas.renderAll();
-    }
+    updateElement(selectedElement.id, { fontSize: newSize });
   };
 
   const handleFontSizeInputChange = (value: string) => {
@@ -94,11 +76,12 @@ export function TextControls() {
 
   const handleFontSizeInputBlur = () => {
     const parsed = parseInt(localFontSizeInput, 10);
-    if (!isNaN(parsed) && parsed >= 1 && parsed <= 500) {
+    if (!Number.isNaN(parsed) && parsed >= 1 && parsed <= 500) {
       handleFontSizeChange([parsed]);
-    } else {
-      setLocalFontSizeInput(String(Math.round(localFontSize)));
+      return;
     }
+
+    setLocalFontSizeInput(String(Math.round(localFontSize)));
   };
 
   const handleFontSizeInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -110,20 +93,19 @@ export function TextControls() {
   const handleFontColorChange = (hexColor: string) => {
     const newColor = hexToRgb(hexColor);
     setLocalFontColor(newColor);
-    if (selectedElement.fabricObject && canvas) {
-      updateTextColor(selectedElement.fabricObject as any, newColor);
-      updateElement(selectedElement.id, { fontColor: newColor });
-      canvas.renderAll();
-    }
+    updateElement(selectedElement.id, {
+      fontColor: newColor,
+      textColorMode: 'manual',
+    });
   };
 
   const handleBgColorChange = (hexColor: string) => {
     const newColor = hexToRgb(hexColor);
     setLocalBgColor(newColor);
-    if (canvas) {
-      updateElement(selectedElement.id, { bgColor: newColor });
-      canvas.renderAll();
-    }
+    updateElement(selectedElement.id, {
+      bgColor: newColor,
+      bgMode: 'manual',
+    });
   };
 
   const handleToggleShowBackground = () => {
@@ -152,12 +134,11 @@ export function TextControls() {
         </h3>
       </div>
 
-      {/* Visibility Toggles */}
       <div className="space-y-2">
         <Label>{t('controls.visibility')}</Label>
         <div className="flex gap-2">
           <Button
-            variant={selectedElement.showBackground ? "default" : "outline"}
+            variant={selectedElement.showBackground ? 'default' : 'outline'}
             className="flex-1"
             onClick={handleToggleShowBackground}
           >
@@ -165,7 +146,7 @@ export function TextControls() {
             {t('controls.showBackground')}
           </Button>
           <Button
-            variant={selectedElement.showText ? "default" : "outline"}
+            variant={selectedElement.showText ? 'default' : 'outline'}
             className="flex-1"
             onClick={handleToggleShowText}
           >
@@ -179,7 +160,6 @@ export function TextControls() {
         </div>
       </div>
 
-      {/* Text Input */}
       <div className="space-y-2">
         <Label htmlFor="text-input">{t('controls.textContent')}</Label>
         <Input
@@ -191,14 +171,12 @@ export function TextControls() {
         />
       </div>
 
-      {/* Font Family */}
       <FontSelector
         value={localFontFamily}
         onValueChange={handleFontChange}
         disabled={!selectedElement.showText}
       />
 
-      {/* Font Size */}
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <Label>{t('controls.fontSize')}</Label>
@@ -226,7 +204,6 @@ export function TextControls() {
         />
       </div>
 
-      {/* Font Color */}
       <div className="space-y-2">
         <Label htmlFor="font-color">{t('controls.fontColor')}</Label>
         <div className="flex items-center gap-3">
@@ -248,7 +225,6 @@ export function TextControls() {
         </div>
       </div>
 
-      {/* Background Color */}
       {selectedElement.showBackground && (
         <div className="space-y-2">
           <Label htmlFor="bg-color">{t('controls.bgColor')}</Label>
@@ -270,28 +246,26 @@ export function TextControls() {
         </div>
       )}
 
-      {/* Detected Colors Info */}
       <div className="space-y-2 pt-2 border-t">
         <Label className="text-xs text-gray-500">{t('controls.detectedColors')}</Label>
         <div className="flex items-center gap-4 text-xs">
           <div className="flex items-center gap-2">
             <div
               className="w-6 h-6 rounded border"
-              style={{ backgroundColor: rgbToHex(selectedElement.detection.textColor) }}
+              style={{ backgroundColor: rgbToHex(selectedElement.original.textColorRaw) }}
             />
             <span>{t('controls.text')}</span>
           </div>
           <div className="flex items-center gap-2">
             <div
               className="w-6 h-6 rounded border"
-              style={{ backgroundColor: rgbToHex(selectedElement.detection.bgColor) }}
+              style={{ backgroundColor: rgbToHex(selectedElement.original.bgColor ?? { r: 255, g: 255, b: 255 }) }}
             />
             <span>{t('controls.background')}</span>
           </div>
         </div>
       </div>
 
-      {/* Action Buttons */}
       <div className="space-y-2 pt-4 border-t">
         <Button
           variant="outline"

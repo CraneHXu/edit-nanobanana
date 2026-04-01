@@ -9,13 +9,63 @@ import { Toolbar } from '@/components/editor/Toolbar';
 import { Sidebar } from '@/components/editor/Sidebar';
 import { preloadCommonFonts } from '@/lib/font-loader';
 
-export default function Home() {
-  const { originalImage } = useEditorStore();
+const SESSION_STORAGE_KEY = 'image-editor-web-session-v2';
 
-  // Preload common fonts on mount
+export default function Home() {
+  const {
+    originalImage,
+    sessionHydrated,
+    hydrateSession,
+    markSessionHydrated,
+  } = useEditorStore();
+
   useEffect(() => {
     preloadCommonFonts();
   }, []);
+
+  useEffect(() => {
+    if (sessionHydrated || typeof window === 'undefined') return;
+
+    const raw = window.localStorage.getItem(SESSION_STORAGE_KEY);
+    if (!raw) {
+      markSessionHydrated();
+      return;
+    }
+
+    try {
+      const payload = JSON.parse(raw);
+      if (payload?.originalImage && payload?.imageMeta && payload?.pageModel) {
+        hydrateSession(payload);
+      } else {
+        markSessionHydrated();
+      }
+    } catch {
+      markSessionHydrated();
+    }
+  }, [hydrateSession, markSessionHydrated, sessionHydrated]);
+
+  useEffect(() => {
+    if (!sessionHydrated || typeof window === 'undefined') return;
+
+    const unsubscribe = useEditorStore.subscribe((state) => {
+      try {
+        if (!state.originalImage || !state.imageMeta || !state.pageModel) {
+          window.localStorage.removeItem(SESSION_STORAGE_KEY);
+          return;
+        }
+
+        window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({
+          originalImage: state.originalImage,
+          imageMeta: state.imageMeta,
+          pageModel: state.pageModel,
+        }));
+      } catch (error) {
+        console.error('Failed to persist editor session:', error);
+      }
+    });
+
+    return unsubscribe;
+  }, [sessionHydrated]);
 
   return (
     <div className="h-screen flex flex-col">

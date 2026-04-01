@@ -9,7 +9,7 @@ import { enhanceDetectionsWithColors } from '@/lib/color-sampler';
 import { useI18n } from '@/lib/i18n';
 
 export function ImageUploader() {
-  const { loadImage, setDetections, setIsDetecting } = useEditorStore();
+  const { loadImage, initializeFromDetections, setIsDetecting } = useEditorStore();
   const { t } = useI18n();
 
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
@@ -45,14 +45,14 @@ export function ImageUploader() {
       );
       console.log('Colors sampled successfully');
 
-      setDetections(enhancedDetections);
+      initializeFromDetections(enhancedDetections);
       setIsDetecting(false);
     } catch (error) {
       console.error('Failed to process image:', error);
       setIsDetecting(false);
       alert(`${t('uploader.failed')}: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
-  }, [loadImage, setDetections, setIsDetecting, t]);
+  }, [initializeFromDetections, loadImage, setIsDetecting, t]);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
