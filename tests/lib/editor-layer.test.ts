@@ -190,5 +190,15 @@ describe('editor store history actions', () => {
     expect(stored?.id).toBe(autoChange.id);
   });
 
+  it('reset clears sessionHydrated and restores current preview mode', () => {
+    useEditorStore.setState({ sessionHydrated: true, previewMode: 'original' });
+
+    useEditorStore.getState().reset();
+
+    const state = useEditorStore.getState();
+    expect(state.sessionHydrated).toBe(false);
+    expect(state.previewMode).toBe('current');
+  });
+
   it.todo('deleteElement applies restore_original patch for removed regions');
 });

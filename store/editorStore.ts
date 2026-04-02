@@ -276,6 +276,13 @@ function shouldInvalidateCleanLayer(updates: Partial<TextElement>): boolean {
   );
 }
 
+function normalizePreviewMode(mode: PreviewMode | string): PreviewMode {
+  if (mode === 'original' || mode === 'auto' || mode === 'current') {
+    return mode;
+  }
+  return 'current';
+}
+
 interface HistoryEntry {
   undo: PageMutation[];
   redo: PageMutation[];
@@ -304,7 +311,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   viewportPan: { x: 0, y: 0 },
   selectedElementId: null,
   editorMode: 'select',
-  previewMode: 'final',
+  previewMode: 'current',
   eraserSize: 20,
   isComparing: false,
   isLoading: false,
@@ -330,7 +337,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         isLoading: false,
         selectedElementId: null,
         isComparing: false,
-        previewMode: 'final',
+        previewMode: 'current',
+        sessionHydrated: false,
         historyPast: [],
         historyFuture: [],
         nextRegionId: 1,
@@ -360,7 +368,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         cleanLayer: null,
       },
       selectedElementId: regions[0]?.id ?? null,
-      previewMode: 'final',
+      previewMode: 'current',
       baseAutoLayer: null,
       currentLayer: null,
       historyPast: [],
@@ -377,7 +385,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       imageFile: null,
       pageModel: normalizedPageModel,
       selectedElementId: normalizedPageModel.regions[0]?.id ?? null,
-      previewMode: 'final',
+      previewMode: 'current',
       sessionHydrated: true,
       baseAutoLayer: null,
       currentLayer: null,
@@ -422,7 +430,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         regions: replaceRegion(pageModel.regions, id, (region) => ({ ...region, ...updates })),
         cleanLayer: invalidateCleanLayer ? null : (pageModel.cleanLayer ?? null),
       },
-      previewMode: invalidateCleanLayer ? 'final' : previewMode,
+      previewMode: invalidateCleanLayer ? 'current' : previewMode,
     });
   },
 
@@ -435,7 +443,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         regions: elements,
         cleanLayer: null,
       },
-      previewMode: 'final',
+      previewMode: 'current',
       nextRegionId: deriveNextRegionId(elements),
     });
   },
@@ -462,7 +470,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         cleanLayer: null,
       },
       selectedElementId: nextSelected,
-      previewMode: 'final',
+      previewMode: 'current',
       historyPast: [
         ...historyPast,
         {
@@ -509,7 +517,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         })),
         cleanLayer: null,
       },
-      previewMode: 'final',
+      previewMode: 'current',
     });
   },
 
@@ -535,14 +543,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         cleanLayer: null,
       },
       selectedElementId: pageModel.regions[0]?.id ?? null,
-      previewMode: 'final',
+      previewMode: 'current',
     });
   },
 
   setSelectedElement: (id: number | null) => set({ selectedElementId: id }),
   setIsDetecting: (isDetecting: boolean) => set({ isDetecting }),
   setEditorMode: (mode: EditorMode) => set({ editorMode: mode }),
-  setPreviewMode: (mode: PreviewMode) => set({ previewMode: mode }),
+  setPreviewMode: (mode: PreviewMode) => set({ previewMode: normalizePreviewMode(mode) }),
   setEraserSize: (size: number) => set({ eraserSize: size }),
   setIsComparing: (isComparing: boolean) => set({ isComparing }),
   setIsCleaningBackground: (isCleaningBackground: boolean) => set({ isCleaningBackground }),
@@ -555,7 +563,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         ...pageModel,
         cleanLayer,
       },
-      previewMode: cleanLayer ? previewMode : 'final',
+      previewMode: cleanLayer ? previewMode : 'current',
     });
   },
   setBaseAutoLayer: (layer: string | null) => set({ baseAutoLayer: layer }),
@@ -631,12 +639,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       viewportPan: { x: 0, y: 0 },
       selectedElementId: null,
       editorMode: 'select',
-      previewMode: 'final',
+      previewMode: 'current',
       eraserSize: 20,
       isComparing: false,
       isLoading: false,
       isDetecting: false,
       isCleaningBackground: false,
+      sessionHydrated: false,
       historyPast: [],
       historyFuture: [],
       nextRegionId: 1,
