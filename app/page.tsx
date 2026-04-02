@@ -92,7 +92,7 @@ export default function Home() {
     void generateCleanBackground(originalImage, pageModel)
       .then((cleanLayer) => {
         setCleanLayer(cleanLayer);
-        setPreviewMode('final');
+        setPreviewMode('current');
       })
       .catch((error) => {
         console.error('Failed to backfill clean layer for hydrated session:', error);

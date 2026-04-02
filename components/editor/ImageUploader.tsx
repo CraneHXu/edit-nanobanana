@@ -64,7 +64,7 @@ export function ImageUploader() {
         console.log('Generating initial clean background...');
         const cleanLayer = await generateCleanBackground(imageUrl, nextPageModel);
         setCleanLayer(cleanLayer);
-        setPreviewMode('final');
+        setPreviewMode('current');
       } catch (error) {
         console.error('Failed to generate initial clean background:', error);
         alert(`${t('toolbar.refreshCleanBackground')}: ${error instanceof Error ? error.message : 'Unknown error'}`);

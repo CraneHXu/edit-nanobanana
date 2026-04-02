@@ -68,7 +68,7 @@ export function Toolbar() {
     try {
       const cleanLayer = await generateCleanBackground(originalImage, pageModel);
       setCleanLayer(cleanLayer);
-      setPreviewMode('final');
+      setPreviewMode('current');
     } catch (error) {
       alert(`${t('toolbar.refreshCleanBackground')}: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
@@ -156,8 +156,8 @@ export function Toolbar() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="original">{t('toolbar.previewOriginal')}</SelectItem>
-                  <SelectItem value="clean" disabled={!pageModel?.cleanLayer}>{t('toolbar.previewClean')}</SelectItem>
-                  <SelectItem value="final">{t('toolbar.previewFinal')}</SelectItem>
+                  <SelectItem value="auto" disabled={!pageModel?.cleanLayer}>{t('toolbar.previewClean')}</SelectItem>
+                  <SelectItem value="current">{t('toolbar.previewFinal')}</SelectItem>
                 </SelectContent>
               </Select>
             </div>

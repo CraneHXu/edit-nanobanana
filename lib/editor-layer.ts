@@ -36,8 +36,8 @@ export function buildRestoreOriginalPatch(options: RestoreOriginalPatchOptions):
 export function composeCurrentLayer<TLayer>(params: {
   baseLayer: TLayer | null;
   patches?: ImagePatch[];
-  applyPatch: (layer: TLayer, patch: ImagePatch) => TLayer;
-}): TLayer | null {
+  applyPatch: (layer: NonNullable<TLayer>, patch: ImagePatch) => NonNullable<TLayer>;
+}): NonNullable<TLayer> | null {
   if (params.baseLayer == null) {
     return null;
   }
@@ -51,7 +51,11 @@ export function composeCurrentLayer<TLayer>(params: {
     })
     .map(({ patch }) => patch);
 
-  return ordered.reduce((layer, patch) => params.applyPatch(layer, patch), params.baseLayer);
+  let layer = params.baseLayer as NonNullable<TLayer>;
+  for (const patch of ordered) {
+    layer = params.applyPatch(layer, patch);
+  }
+  return layer;
 }
 
 export function resolvePreviewBackground(params: {

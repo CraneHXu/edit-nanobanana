@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { buildRestoreOriginalPatch, composeCurrentLayer, resolvePreviewBackground } from '@/lib/editor-layer';
 import { useEditorStore } from '@/store/editorStore';
@@ -201,4 +203,31 @@ describe('editor store history actions', () => {
   });
 
   it.todo('deleteElement applies restore_original patch for removed regions');
+});
+
+describe('preview mode cleanup', () => {
+  it('removes legacy preview mode strings from UI entrypoints', () => {
+    const root = process.cwd();
+    const files = [
+      'app/page.tsx',
+      'components/editor/ImageUploader.tsx',
+      'components/editor/Toolbar.tsx',
+      'components/editor/CanvasEditor.tsx',
+    ];
+    const legacyTokens = [
+      "setPreviewMode('final')",
+      "setPreviewMode('clean')",
+      "previewMode === 'final'",
+      "previewMode === 'clean'",
+      'value="final"',
+      'value="clean"',
+    ];
+
+    for (const file of files) {
+      const content = readFileSync(resolve(root, file), 'utf-8');
+      for (const token of legacyTokens) {
+        expect(content.includes(token)).toBe(false);
+      }
+    }
+  });
 });

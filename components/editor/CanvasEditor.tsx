@@ -155,7 +155,7 @@ export function CanvasEditor() {
       if (isComparing) {
         return originalImage;
       }
-      if (previewMode === 'clean' || previewMode === 'final') {
+      if (previewMode === 'auto' || previewMode === 'current') {
         return pageModel?.cleanLayer || originalImage;
       }
       return originalImage;
@@ -256,7 +256,7 @@ export function CanvasEditor() {
 
     const regions = (pageModel?.regions ?? []).filter((region) => !region.removed);
     const activeIds = new Set(regions.map((region) => region.id));
-    const shouldShowComposite = !isComparing && previewMode === 'final';
+    const shouldShowComposite = !isComparing && previewMode === 'current';
 
     suppressCanvasWritebackRef.current = true;
     try {
