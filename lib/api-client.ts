@@ -4,7 +4,7 @@
  * Supports SSE streaming for long-running OCR requests
  */
 
-import { DetectionResponse } from '@/types/ocr';
+import type { BoundingBox, DetectionResponse } from '@/types/ocr';
 
 // Use relative paths for API routes (works on Vercel and locally)
 const API_BASE_URL = '';
@@ -78,6 +78,19 @@ async function scaleImageForOCR(file: File, targetHeight: number): Promise<Scale
 
 interface ProgressCallback {
   (stage: string, message: string): void;
+}
+
+export interface InpaintRequest {
+  imageDataUrl: string;
+  source: 'original';
+  sourceBounds: BoundingBox;
+  sourcePolygon?: [number, number][];
+}
+
+export interface InpaintResponse {
+  success?: boolean;
+  patchId?: string;
+  imageDataUrl?: string;
 }
 
 export async function detectText(
@@ -202,6 +215,22 @@ export async function healthCheck(): Promise<{ status: string }> {
 
   if (!response.ok) {
     throw new Error('Health check failed');
+  }
+
+  return response.json();
+}
+
+export async function inpaintRegion(request: InpaintRequest): Promise<InpaintResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/inpaint`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Inpaint failed: ${response.status} ${response.statusText}`);
   }
 
   return response.json();

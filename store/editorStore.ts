@@ -23,6 +23,7 @@ interface EditorState {
   pageModel: PageModel | null;
   baseAutoLayer: string | null;
   currentLayer: string | null;
+  autoAiRevision: number;
   canvas: any | null;
   canvasScale: number;
   viewportZoom: number;
@@ -39,6 +40,7 @@ interface EditorState {
   historyPast: HistoryEntry[];
   historyFuture: HistoryEntry[];
   nextRegionId: number;
+  bumpAutoAiRevision: () => number;
   loadImage: (file: File) => Promise<void>;
   initializeFromDetections: (detections: OCRDetection[]) => void;
   hydrateSession: (payload: { originalImage: string; imageMeta: ImageMeta; pageModel: PageModel }) => void;
@@ -305,6 +307,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   pageModel: null,
   baseAutoLayer: null,
   currentLayer: null,
+  autoAiRevision: 0,
   canvas: null,
   canvasScale: 1,
   viewportZoom: 1,
@@ -321,11 +324,17 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   historyPast: [],
   historyFuture: [],
   nextRegionId: 1,
+  bumpAutoAiRevision: () => {
+    const nextRevision = get().autoAiRevision + 1;
+    set({ autoAiRevision: nextRevision });
+    return nextRevision;
+  },
 
   loadImage: async (file: File) => {
     set({ isLoading: true });
     try {
       const { dataUrl, width, height } = await readImageData(file);
+      const nextRevision = get().autoAiRevision + 1;
       set({
         originalImage: dataUrl,
         imageFile: file,
@@ -342,6 +351,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         historyPast: [],
         historyFuture: [],
         nextRegionId: 1,
+        autoAiRevision: nextRevision,
       });
     } catch (error) {
       console.error('Failed to load image:', error);
@@ -358,6 +368,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
     const regions = detections.map(createTextElement);
     const nextRegionId = deriveNextRegionId(regions);
+    const nextRevision = get().autoAiRevision + 1;
 
     set({
       pageModel: {
@@ -374,11 +385,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       historyPast: [],
       historyFuture: [],
       nextRegionId,
+      autoAiRevision: nextRevision,
     });
   },
 
   hydrateSession: ({ originalImage, imageMeta, pageModel }) => {
     const normalizedPageModel = normalizePageModel(pageModel);
+    const nextRevision = get().autoAiRevision + 1;
     set({
       originalImage,
       imageMeta,
@@ -392,6 +405,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       historyPast: [],
       historyFuture: [],
       nextRegionId: deriveNextRegionId(normalizedPageModel.regions),
+      autoAiRevision: nextRevision,
     });
   },
 
@@ -423,6 +437,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const { pageModel, previewMode } = get();
     if (!pageModel) return;
     const invalidateCleanLayer = shouldInvalidateCleanLayer(updates);
+    const nextRevision = get().autoAiRevision + 1;
 
     set({
       pageModel: {
@@ -431,12 +446,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         cleanLayer: invalidateCleanLayer ? null : (pageModel.cleanLayer ?? null),
       },
       previewMode: invalidateCleanLayer ? 'current' : previewMode,
+      autoAiRevision: nextRevision,
     });
   },
 
   replaceElements: (elements: TextElement[]) => {
     const { pageModel } = get();
     if (!pageModel) return;
+    const nextRevision = get().autoAiRevision + 1;
     set({
       pageModel: {
         ...pageModel,
@@ -445,6 +462,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       },
       previewMode: 'current',
       nextRegionId: deriveNextRegionId(elements),
+      autoAiRevision: nextRevision,
     });
   },
 
@@ -463,6 +481,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     ];
     const nextPageModel = applyMutations(pageModel, redo);
     const nextSelected = getActiveRegions(nextPageModel.regions).find((region) => region.id !== id)?.id ?? null;
+    const nextRevision = get().autoAiRevision + 1;
 
     set({
       pageModel: {
@@ -481,6 +500,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         },
       ],
       historyFuture: [],
+      autoAiRevision: nextRevision,
     });
   },
 
@@ -499,6 +519,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   resetElement: (id: number) => {
     const { pageModel } = get();
     if (!pageModel) return;
+    const nextRevision = get().autoAiRevision + 1;
 
     set({
       pageModel: {
@@ -518,12 +539,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         cleanLayer: null,
       },
       previewMode: 'current',
+      autoAiRevision: nextRevision,
     });
   },
 
   restoreAll: () => {
     const { pageModel } = get();
     if (!pageModel) return;
+    const nextRevision = get().autoAiRevision + 1;
 
     set({
       pageModel: {
@@ -544,6 +567,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       },
       selectedElementId: pageModel.regions[0]?.id ?? null,
       previewMode: 'current',
+      autoAiRevision: nextRevision,
     });
   },
 
@@ -575,11 +599,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const redo: PageMutation[] = [{ type: 'apply-patch', patch }];
     const undo: PageMutation[] = [{ type: 'revert-patch', patchId: patch.id }];
     const nextPageModel = applyMutations(pageModel, redo);
+    const nextRevision = get().autoAiRevision + 1;
 
     set({
       pageModel: nextPageModel,
       historyPast: [...historyPast, { redo, undo }],
       historyFuture: [],
+      autoAiRevision: nextRevision,
     });
   },
   applyAutoPatch: (patch: ImagePatch, autoChange: AutoChange) => {
@@ -589,11 +615,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const redo: PageMutation[] = [{ type: 'apply-patch', patch, autoChange }];
     const undo: PageMutation[] = [{ type: 'revert-patch', patchId: patch.id, autoChangeId: autoChange.id }];
     const nextPageModel = applyMutations(pageModel, redo);
+    const nextRevision = get().autoAiRevision + 1;
 
     set({
       pageModel: nextPageModel,
       historyPast: [...historyPast, { redo, undo }],
       historyFuture: [],
+      autoAiRevision: nextRevision,
     });
   },
   undo: async () => {
@@ -602,12 +630,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
     const entry = historyPast[historyPast.length - 1];
     const nextPageModel = applyMutations(pageModel, entry.undo);
+    const nextRevision = get().autoAiRevision + 1;
 
     set({
       pageModel: nextPageModel,
       historyPast: historyPast.slice(0, -1),
       historyFuture: [entry, ...historyFuture],
       selectedElementId: entry.selectedElementId ?? selectedElementId,
+      autoAiRevision: nextRevision,
     });
   },
   redo: async () => {
@@ -616,16 +646,19 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
     const entry = historyFuture[0];
     const nextPageModel = applyMutations(pageModel, entry.redo);
+    const nextRevision = get().autoAiRevision + 1;
 
     set({
       pageModel: nextPageModel,
       historyPast: [...historyPast, entry],
       historyFuture: historyFuture.slice(1),
       selectedElementId: entry.nextSelectedElementId ?? selectedElementId,
+      autoAiRevision: nextRevision,
     });
   },
 
   reset: () => {
+    const nextRevision = get().autoAiRevision + 1;
     set({
       originalImage: null,
       imageFile: null,
@@ -649,6 +682,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       historyPast: [],
       historyFuture: [],
       nextRegionId: 1,
+      autoAiRevision: nextRevision,
     });
   },
 }));

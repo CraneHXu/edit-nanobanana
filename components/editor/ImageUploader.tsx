@@ -4,10 +4,52 @@ import React, { useCallback } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { Upload } from 'lucide-react';
 import { useEditorStore } from '@/store/editorStore';
-import { detectText } from '@/lib/api-client';
+import { detectText, inpaintRegion } from '@/lib/api-client';
+import { buildAutoRepairCandidates, shouldDropAsyncResult, shouldUseAutoAi } from '@/lib/auto-repair';
 import { enhanceDetectionsWithStyles } from '@/lib/color-sampler';
-import { generateCleanBackground } from '@/lib/clean-background';
+import { estimateRegionComplexity, generateCleanBackground } from '@/lib/clean-background';
 import { useI18n } from '@/lib/i18n';
+import type { AutoChange, ImagePatch, TextElement } from '@/types/canvas';
+
+function isAutoRepairRegion(region: TextElement | undefined): region is TextElement {
+  if (!region || region.removed || region.excludedFromClean) {
+    return false;
+  }
+
+  const source = region.source ?? 'ocr';
+  return source === 'ocr' || source === 'roi_ocr';
+}
+
+function buildAutoAiEntry(regionId: number, patchId: string, createdAt: number): {
+  patch: ImagePatch;
+  autoChange: AutoChange;
+} {
+  const patch: ImagePatch = {
+    id: patchId,
+    kind: 'auto_ai',
+    regionIds: [regionId],
+    previewMode: 'current',
+    createdAt,
+    applied: true,
+    reverted: false,
+    description: `Auto AI repair for region ${regionId}`,
+  };
+
+  return {
+    patch,
+    autoChange: {
+      id: `change-${patchId}`,
+      patchId,
+      patchKind: patch.kind,
+      previewMode: patch.previewMode,
+      regionIds: patch.regionIds,
+      createdAt,
+      applied: true,
+      reverted: false,
+      description: patch.description,
+    },
+  };
+}
 
 export function ImageUploader() {
   const {
@@ -16,9 +58,65 @@ export function ImageUploader() {
     setIsDetecting,
     setIsCleaningBackground,
     setCleanLayer,
+    setBaseAutoLayer,
+    setCurrentLayer,
     setPreviewMode,
+    applyAutoPatch,
   } = useEditorStore();
   const { t } = useI18n();
+
+  const runAutoAiQueue = useCallback(async (imageUrl: string) => {
+    const initialPageModel = useEditorStore.getState().pageModel;
+    if (!initialPageModel) {
+      return;
+    }
+
+    const candidates = buildAutoRepairCandidates(initialPageModel);
+    for (const candidate of candidates) {
+      const stateBeforeComplexity = useEditorStore.getState();
+      const regionBeforeComplexity = stateBeforeComplexity.pageModel?.regions.find(
+        (region) => region.id === candidate.regionId,
+      );
+      if (!isAutoRepairRegion(regionBeforeComplexity)) {
+        continue;
+      }
+
+      try {
+        const complexity = await estimateRegionComplexity(imageUrl, regionBeforeComplexity);
+        if (!shouldUseAutoAi(complexity)) {
+          continue;
+        }
+
+        const submittedRevision = useEditorStore.getState().autoAiRevision;
+        const response = await inpaintRegion({
+          imageDataUrl: imageUrl,
+          source: 'original',
+          sourceBounds: candidate.sourceBounds,
+          sourcePolygon: candidate.sourcePolygon,
+        });
+        if (response.success === false) {
+          throw new Error('Inpaint API returned an unsuccessful result');
+        }
+
+        const latestState = useEditorStore.getState();
+        if (shouldDropAsyncResult(submittedRevision, latestState.autoAiRevision)) {
+          continue;
+        }
+
+        const latestRegion = latestState.pageModel?.regions.find((region) => region.id === candidate.regionId);
+        if (!isAutoRepairRegion(latestRegion)) {
+          continue;
+        }
+
+        const createdAt = Date.now();
+        const patchId = response.patchId ?? `auto-ai-${candidate.regionId}-${createdAt}`;
+        const { patch, autoChange } = buildAutoAiEntry(candidate.regionId, patchId, createdAt);
+        applyAutoPatch(patch, autoChange);
+      } catch (error) {
+        console.error(`Failed to auto repair region ${candidate.regionId}:`, error);
+      }
+    }
+  }, [applyAutoPatch]);
 
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
     const file = acceptedFiles[0];
@@ -55,6 +153,7 @@ export function ImageUploader() {
 
       initializeFromDetections(enhancedDetections);
       setIsCleaningBackground(true);
+      let shouldStartAutoAi = false;
       try {
         const nextPageModel = useEditorStore.getState().pageModel;
         if (!nextPageModel) {
@@ -64,7 +163,10 @@ export function ImageUploader() {
         console.log('Generating initial clean background...');
         const cleanLayer = await generateCleanBackground(imageUrl, nextPageModel);
         setCleanLayer(cleanLayer);
+        setBaseAutoLayer(cleanLayer);
+        setCurrentLayer(cleanLayer);
         setPreviewMode('current');
+        shouldStartAutoAi = true;
       } catch (error) {
         console.error('Failed to generate initial clean background:', error);
         alert(`${t('toolbar.refreshCleanBackground')}: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -72,13 +174,27 @@ export function ImageUploader() {
         setIsCleaningBackground(false);
       }
       setIsDetecting(false);
+      if (shouldStartAutoAi) {
+        void runAutoAiQueue(imageUrl);
+      }
     } catch (error) {
       console.error('Failed to process image:', error);
       setIsDetecting(false);
       setIsCleaningBackground(false);
       alert(`${t('uploader.failed')}: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
-  }, [initializeFromDetections, loadImage, setCleanLayer, setIsCleaningBackground, setIsDetecting, setPreviewMode, t]);
+  }, [
+    initializeFromDetections,
+    loadImage,
+    runAutoAiQueue,
+    setBaseAutoLayer,
+    setCleanLayer,
+    setCurrentLayer,
+    setIsCleaningBackground,
+    setIsDetecting,
+    setPreviewMode,
+    t,
+  ]);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
