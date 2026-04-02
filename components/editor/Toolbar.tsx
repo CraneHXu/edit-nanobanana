@@ -1,6 +1,6 @@
 "use client";
 
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Download, RotateCcw, Globe, RefreshCw, MousePointer, Eraser, Eye, ZoomIn, ZoomOut, Maximize2, Sparkles, Layers3 } from 'lucide-react';
 import { Slider } from '@/components/ui/slider';
@@ -8,6 +8,8 @@ import { useEditorStore, EditorMode, RoiAction } from '@/store/editorStore';
 import { exportCanvasAsPNG } from '@/lib/fabric-utils';
 import { useI18n, Locale } from '@/lib/i18n';
 import { generateCleanBackground } from '@/lib/clean-background';
+import { AutoChangesPanel } from '@/components/editor/AutoChangesPanel';
+import type { AutoChange, PageModel } from '@/types/canvas';
 import {
   Select,
   SelectContent,
@@ -16,7 +18,44 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 
+function resolveAutoChangeStatus(change: AutoChange): 'new' | 'seen' | 'reverted' {
+  if (change.status) {
+    return change.status;
+  }
+  if (change.reverted) {
+    return 'reverted';
+  }
+  return change.applied ? 'new' : 'seen';
+}
+
+function updatePageModelAutoChanges(
+  pageModel: PageModel,
+  changeId: string,
+  updater: (change: AutoChange) => AutoChange,
+): PageModel {
+  const nextAutoChanges = pageModel.autoChanges?.map((change) => (
+    change.id === changeId ? updater(change) : change
+  ));
+
+  const targetChange = pageModel.autoChanges?.find((change) => change.id === changeId);
+  const nextPatches = targetChange
+    ? pageModel.patches?.map((patch) => (
+        patch.id === targetChange.patchId
+          ? { ...patch, applied: false, reverted: true }
+          : patch
+      ))
+    : pageModel.patches;
+
+  return {
+    ...pageModel,
+    autoChanges: nextAutoChanges,
+    patches: nextPatches,
+  };
+}
+
 export function Toolbar() {
+  const [isAutoChangesOpen, setIsAutoChangesOpen] = useState(false);
+  const autoChangesRef = useRef<HTMLDivElement>(null);
   const {
     canvas,
     canvasScale,
@@ -43,6 +82,25 @@ export function Toolbar() {
     setCleanLayer,
   } = useEditorStore();
   const { t, locale, setLocale } = useI18n();
+  const autoChanges = pageModel?.autoChanges ?? [];
+  const unseenAutoChanges = autoChanges.filter((change) => resolveAutoChangeStatus(change) === 'new');
+
+  useEffect(() => {
+    if (!isAutoChangesOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!autoChangesRef.current?.contains(event.target as Node)) {
+        setIsAutoChangesOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+    };
+  }, [isAutoChangesOpen]);
 
   const handleExport = async () => {
     if (!canvas || !originalImage) {
@@ -113,8 +171,44 @@ export function Toolbar() {
     setEditorMode('roi');
   };
 
+  const handleMarkSeen = (changeId: string) => {
+    useEditorStore.setState((state) => {
+      if (!state.pageModel) {
+        return state;
+      }
+
+      return {
+        pageModel: {
+          ...state.pageModel,
+          autoChanges: state.pageModel.autoChanges?.map((change) => (
+            change.id === changeId && resolveAutoChangeStatus(change) === 'new'
+              ? { ...change, status: 'seen' }
+              : change
+          )),
+        },
+      };
+    });
+  };
+
+  const handleRevertAutoChange = (changeId: string) => {
+    useEditorStore.setState((state) => {
+      if (!state.pageModel) {
+        return state;
+      }
+
+      return {
+        pageModel: updatePageModelAutoChanges(state.pageModel, changeId, (change) => ({
+          ...change,
+          applied: false,
+          reverted: true,
+          status: 'reverted',
+        })),
+      };
+    });
+  };
+
   return (
-    <div className="flex items-center justify-between px-6 py-4 bg-white border-b">
+    <div className="relative flex items-center justify-between border-b bg-white px-6 py-4">
       <div>
         <h1 className="text-2xl font-bold">{t('app.title')}</h1>
         <p className="text-sm text-gray-600">{t('app.subtitle')}</p>
@@ -147,7 +241,7 @@ export function Toolbar() {
                 onClick={handleAddTextMode}
                 disabled={!pageModel}
               >
-                Add text mode
+                {t('toolbar.addTextMode')}
               </Button>
             </div>
 
@@ -214,10 +308,37 @@ export function Toolbar() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="original">{t('toolbar.previewOriginal')}</SelectItem>
-                  <SelectItem value="auto" disabled={!pageModel?.cleanLayer}>{t('toolbar.previewClean')}</SelectItem>
-                  <SelectItem value="current">{t('toolbar.previewFinal')}</SelectItem>
+                  <SelectItem value="auto" disabled={!pageModel?.cleanLayer}>{t('toolbar.previewAuto')}</SelectItem>
+                  <SelectItem value="current">{t('toolbar.previewCurrent')}</SelectItem>
                 </SelectContent>
               </Select>
+            </div>
+
+            <div ref={autoChangesRef} className="relative">
+              <Button
+                variant={isAutoChangesOpen ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setIsAutoChangesOpen((open) => !open)}
+                disabled={autoChanges.length === 0}
+              >
+                <Sparkles className="w-4 h-4 mr-1" />
+                {t('toolbar.autoChanges')}
+                {unseenAutoChanges.length > 0 && (
+                  <span className="ml-1 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-700">
+                    {unseenAutoChanges.length}
+                  </span>
+                )}
+              </Button>
+
+              {isAutoChangesOpen && (
+                <div className="absolute right-0 top-full z-20 mt-2">
+                  <AutoChangesPanel
+                    autoChanges={autoChanges}
+                    onRevert={handleRevertAutoChange}
+                    onMarkSeen={handleMarkSeen}
+                  />
+                </div>
+              )}
             </div>
 
             {/* Compare Button */}

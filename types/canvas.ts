@@ -18,6 +18,7 @@ export type BackgroundMode = 'none' | 'fill' | 'manual' | 'inpaint';
 export type RegionSource = 'ocr' | 'roi_ocr' | 'manual';
 export type PreviewMode = 'original' | 'auto' | 'current';
 export type PatchKind = 'local_clean' | 'auto_ai' | 'manual_ai' | 'restore_original';
+export type AutoChangeStatus = 'new' | 'seen' | 'reverted';
 
 export interface TextElementSnapshot {
   bbox: OCRDetection['bounds'];
@@ -94,6 +95,7 @@ export interface AutoChange {
   applied: boolean;
   reverted: boolean;
   description?: string;
+  status?: AutoChangeStatus;
 }
 
 export interface PageModel {

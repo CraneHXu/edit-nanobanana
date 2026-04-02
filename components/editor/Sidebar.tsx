@@ -5,6 +5,20 @@ import { Eye, EyeOff, Trash2 } from 'lucide-react';
 import { useEditorStore } from '@/store/editorStore';
 import { useI18n } from '@/lib/i18n';
 
+type Translate = ReturnType<(typeof useI18n)['getState']>['t'];
+
+function getSourceBadgeLabel(source: string | undefined, t: Translate) {
+  switch (source) {
+    case 'manual':
+      return t('sidebar.badgeManual');
+    case 'roi_ocr':
+      return t('sidebar.badgeRoiOcr');
+    case 'ocr':
+    default:
+      return t('sidebar.badgeOcr');
+  }
+}
+
 export function Sidebar() {
   const {
     pageModel,
@@ -109,6 +123,45 @@ export function Sidebar() {
             <div className="flex-1 min-w-0">
               <div className="font-medium text-xs mb-1">
                 [{element.id}]
+              </div>
+              <div className="mb-1 flex flex-wrap gap-1">
+                <span
+                  className={`
+                    rounded-full px-1.5 py-0.5 text-[10px] font-medium
+                    ${selectedElementId === element.id
+                      ? 'bg-primary-foreground/20 text-primary-foreground'
+                      : 'bg-slate-200 text-slate-700'
+                    }
+                  `}
+                >
+                  {getSourceBadgeLabel(element.source, t)}
+                </span>
+                {element.excludedFromClean && (
+                  <span
+                    className={`
+                      rounded-full px-1.5 py-0.5 text-[10px] font-medium
+                      ${selectedElementId === element.id
+                        ? 'bg-amber-200/40 text-primary-foreground'
+                        : 'bg-amber-100 text-amber-700'
+                      }
+                    `}
+                  >
+                    {t('sidebar.badgeExcluded')}
+                  </span>
+                )}
+                {element.lowConfidence && (
+                  <span
+                    className={`
+                      rounded-full px-1.5 py-0.5 text-[10px] font-medium
+                      ${selectedElementId === element.id
+                        ? 'bg-rose-200/40 text-primary-foreground'
+                        : 'bg-rose-100 text-rose-700'
+                      }
+                    `}
+                  >
+                    {t('sidebar.badgeLowConfidence')}
+                  </span>
+                )}
               </div>
               <div className={`truncate ${!element.showText ? 'line-through opacity-50' : ''}`}>
                 {element.text || t('sidebar.empty')}

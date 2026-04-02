@@ -19,17 +19,28 @@ const translations = {
     'toolbar.refreshCleanBackground': 'Refresh Clean BG',
     'toolbar.refreshingCleanBackground': 'Refreshing...',
     'toolbar.previewOriginal': 'Original',
-    'toolbar.previewClean': 'Clean Layer',
-    'toolbar.previewFinal': 'Final',
+    'toolbar.previewAuto': 'Auto',
+    'toolbar.previewCurrent': 'Current',
     'toolbar.selectMode': 'Select mode',
     'toolbar.eraserMode': 'Eraser mode',
     'toolbar.eraserSize': 'Size',
+    'toolbar.addTextMode': 'Add text mode',
     'toolbar.compare': 'Compare',
     'toolbar.compareHint': 'Hold to compare with original',
     'toolbar.zoomIn': 'Zoom in',
     'toolbar.zoomOut': 'Zoom out',
     'toolbar.resetZoom': 'Reset zoom (fit to view)',
     'toolbar.zoomHint': 'Ctrl+scroll to zoom, scroll to pan',
+    'toolbar.autoChanges': 'Auto changes',
+    'toolbar.autoChangesSummary': '{count} recent changes',
+    'toolbar.autoChangesEmpty': 'No automatic changes yet',
+    'toolbar.autoChangesFallback': 'Automatic change',
+    'toolbar.autoChangesRegions': '{count} regions',
+    'toolbar.autoChangeStatus.new': 'New',
+    'toolbar.autoChangeStatus.seen': 'Seen',
+    'toolbar.autoChangeStatus.reverted': 'Reverted',
+    'toolbar.markSeen': 'Mark seen',
+    'toolbar.revertAutoChange': 'Revert',
 
     // ImageUploader
     'uploader.dropHere': 'Drop image here...',
@@ -42,6 +53,11 @@ const translations = {
     'sidebar.uploadHint': 'Upload an image to get started',
     'sidebar.detectedText': 'Detected Text',
     'sidebar.empty': '(empty)',
+    'sidebar.badgeOcr': 'OCR',
+    'sidebar.badgeRoiOcr': 'ROI OCR',
+    'sidebar.badgeManual': 'Manual',
+    'sidebar.badgeExcluded': 'Excluded',
+    'sidebar.badgeLowConfidence': 'Low confidence',
 
     // TextControls
     'controls.editText': 'Edit Text',
@@ -91,6 +107,7 @@ const translations = {
 
     // Canvas
     'canvas.comparing': 'Comparing with original',
+    'canvas.autoChange': 'Auto',
     'toolbar.eraserHint': 'Select a text element first to use eraser',
   },
   zh: {
@@ -106,17 +123,28 @@ const translations = {
     'toolbar.refreshCleanBackground': '重新生成干净背景',
     'toolbar.refreshingCleanBackground': '重新生成中...',
     'toolbar.previewOriginal': '原图',
-    'toolbar.previewClean': '干净层',
-    'toolbar.previewFinal': '最终合成',
+    'toolbar.previewAuto': '自动层',
+    'toolbar.previewCurrent': '当前',
     'toolbar.selectMode': '选择模式',
     'toolbar.eraserMode': '橡皮擦模式',
     'toolbar.eraserSize': '大小',
+    'toolbar.addTextMode': '手工加字',
     'toolbar.compare': '对比',
     'toolbar.compareHint': '按住对比原图',
     'toolbar.zoomIn': '放大',
     'toolbar.zoomOut': '缩小',
     'toolbar.resetZoom': '重置缩放（适应视图）',
     'toolbar.zoomHint': 'Ctrl+滚轮缩放，滚动平移',
+    'toolbar.autoChanges': '自动改动',
+    'toolbar.autoChangesSummary': '最近 {count} 条改动',
+    'toolbar.autoChangesEmpty': '还没有自动改动',
+    'toolbar.autoChangesFallback': '自动改动',
+    'toolbar.autoChangesRegions': '{count} 个区域',
+    'toolbar.autoChangeStatus.new': '新改动',
+    'toolbar.autoChangeStatus.seen': '已查看',
+    'toolbar.autoChangeStatus.reverted': '已回退',
+    'toolbar.markSeen': '标为已看',
+    'toolbar.revertAutoChange': '回退',
 
     // ImageUploader
     'uploader.dropHere': '将图片拖放到这里...',
@@ -129,6 +157,11 @@ const translations = {
     'sidebar.uploadHint': '上传图片开始使用',
     'sidebar.detectedText': '检测到的文字',
     'sidebar.empty': '（空）',
+    'sidebar.badgeOcr': 'OCR',
+    'sidebar.badgeRoiOcr': '框选 OCR',
+    'sidebar.badgeManual': '手工',
+    'sidebar.badgeExcluded': '排除清底',
+    'sidebar.badgeLowConfidence': '低置信度',
 
     // TextControls
     'controls.editText': '编辑文字',
@@ -178,6 +211,7 @@ const translations = {
 
     // Canvas
     'canvas.comparing': '正在对比原图',
+    'canvas.autoChange': '自动',
     'toolbar.eraserHint': '请先选择一个文字元素才能使用橡皮擦',
   },
 } as const;

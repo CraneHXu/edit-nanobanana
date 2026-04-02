@@ -18,6 +18,8 @@ import {
   syncTextObject,
 } from '@/lib/fabric-utils';
 import { resolvePreviewBackground } from '@/lib/editor-layer';
+import { useI18n } from '@/lib/i18n';
+import type { AutoChange } from '@/types/canvas';
 
 const DEFAULT_FONT = 'Noto Sans SC';
 
@@ -78,6 +80,16 @@ function normalizeDraftBox(start: { x: number; y: number }, end: { x: number; y:
     width: Math.abs(end.x - start.x),
     height: Math.abs(end.y - start.y),
   };
+}
+
+function resolveAutoChangeStatus(change: AutoChange): 'new' | 'seen' | 'reverted' {
+  if (change.status) {
+    return change.status;
+  }
+  if (change.reverted) {
+    return 'reverted';
+  }
+  return change.applied ? 'new' : 'seen';
 }
 
 function toImageBounds(draftBox: DraftBox, scale: number): BoundingBox {
@@ -184,6 +196,7 @@ export function CanvasEditor() {
   const {
     originalImage,
     pageModel,
+    canvasScale,
     setCanvas,
     setCanvasScale,
     setCleanLayer,
@@ -207,6 +220,7 @@ export function CanvasEditor() {
     setPreviewMode,
     isCleaningBackground,
   } = useEditorStore();
+  const { t } = useI18n();
 
   useEffect(() => {
     pageModelRef.current = pageModel;
@@ -772,6 +786,15 @@ export function CanvasEditor() {
     };
   }, [setViewportZoom, viewportZoom]);
 
+  const autoChangedRegionIds = new Set(
+    (pageModel?.autoChanges ?? [])
+      .filter((change) => resolveAutoChangeStatus(change) === 'new')
+      .flatMap((change) => change.regionIds),
+  );
+  const highlightedRegions = (pageModel?.regions ?? []).filter((region) => (
+    !region.removed && autoChangedRegionIds.has(region.id)
+  ));
+
   return (
     <div
       ref={containerRef}
@@ -785,6 +808,22 @@ export function CanvasEditor() {
         }}
       >
         <div ref={wrapperRef} className="relative">
+          {highlightedRegions.map((region) => (
+            <div
+              key={`auto-change-${region.id}`}
+              className="pointer-events-none absolute rounded-md border-2 border-emerald-500 bg-emerald-400/10 shadow-[0_0_0_1px_rgba(16,185,129,0.15)]"
+              style={{
+                left: region.sourceBounds.x * canvasScale,
+                top: region.sourceBounds.y * canvasScale,
+                width: region.sourceBounds.width * canvasScale,
+                height: region.sourceBounds.height * canvasScale,
+              }}
+            >
+              <span className="absolute -top-5 left-0 rounded-full bg-emerald-500 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-white">
+                {t('canvas.autoChange')}
+              </span>
+            </div>
+          ))}
           {editorMode === 'eraser' && cursorPos && (
             <div
               className="absolute pointer-events-none border-2 border-red-500 rounded-full bg-red-500/20"
