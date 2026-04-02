@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test": "vitest run"
   },
   "dependencies": {
     "next": "^15.1.4",
@@ -25,15 +26,19 @@
     "lucide-react": "^0.468.0"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.0.0",
+    "@testing-library/react": "^16.3.2",
     "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "typescript": "^5",
+    "autoprefixer": "^10.4.20",
     "eslint": "^9",
     "eslint-config-next": "^15.1.4",
-    "tailwindcss": "^3.4.1",
+    "jsdom": "^23.0.0",
     "postcss": "^8.4.49",
-    "autoprefixer": "^10.4.20",
-    "tailwindcss-animate": "^1.0.7"
+    "tailwindcss": "^3.4.1",
+    "tailwindcss-animate": "^1.0.7",
+    "typescript": "^5",
+    "vitest": "^1.0.0"
   }
 }
