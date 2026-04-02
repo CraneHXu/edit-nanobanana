@@ -3,9 +3,11 @@
  */
 
 import { create } from 'zustand';
+import { applyPageMutation, PageMutation } from '@/lib/editor-mutations';
+import { buildRestoreOriginalPatch } from '@/lib/editor-layer';
 import { estimateFontSizeToBox } from '@/lib/text-layout';
 import { BoundingBox, OCRDetection } from '@/types/ocr';
-import { PageModel, PreviewMode, TextElement } from '@/types/canvas';
+import { AutoChange, ImagePatch, PageModel, PreviewMode, TextElement } from '@/types/canvas';
 
 export type EditorMode = 'select' | 'eraser';
 
@@ -19,6 +21,8 @@ interface EditorState {
   imageFile: File | null;
   imageMeta: ImageMeta | null;
   pageModel: PageModel | null;
+  baseAutoLayer: string | null;
+  currentLayer: string | null;
   canvas: any | null;
   canvasScale: number;
   viewportZoom: number;
@@ -32,6 +36,9 @@ interface EditorState {
   isDetecting: boolean;
   isCleaningBackground: boolean;
   sessionHydrated: boolean;
+  historyPast: HistoryEntry[];
+  historyFuture: HistoryEntry[];
+  nextRegionId: number;
   loadImage: (file: File) => Promise<void>;
   initializeFromDetections: (detections: OCRDetection[]) => void;
   hydrateSession: (payload: { originalImage: string; imageMeta: ImageMeta; pageModel: PageModel }) => void;
@@ -45,7 +52,7 @@ interface EditorState {
   resetZoom: () => void;
   updateElement: (id: number, updates: Partial<TextElement>) => void;
   replaceElements: (elements: TextElement[]) => void;
-  deleteElement: (id: number) => void;
+  deleteElement: (id: number) => Promise<void>;
   toggleShowText: (id: number) => void;
   resetElement: (id: number) => void;
   restoreAll: () => void;
@@ -57,6 +64,12 @@ interface EditorState {
   setIsComparing: (isComparing: boolean) => void;
   setIsCleaningBackground: (isCleaningBackground: boolean) => void;
   setCleanLayer: (cleanLayer: string | null) => void;
+  setBaseAutoLayer: (layer: string | null) => void;
+  setCurrentLayer: (layer: string | null) => void;
+  applyPatch: (patch: ImagePatch) => void;
+  applyAutoPatch: (patch: ImagePatch, autoChange: AutoChange) => void;
+  undo: () => Promise<void>;
+  redo: () => Promise<void>;
   reset: () => void;
 }
 
@@ -263,11 +276,28 @@ function shouldInvalidateCleanLayer(updates: Partial<TextElement>): boolean {
   );
 }
 
+interface HistoryEntry {
+  undo: PageMutation[];
+  redo: PageMutation[];
+  selectedElementId?: number | null;
+  nextSelectedElementId?: number | null;
+}
+
+function applyMutations(pageModel: PageModel, mutations: PageMutation[]): PageModel {
+  return mutations.reduce((model, mutation) => applyPageMutation(model, mutation), pageModel);
+}
+
+function deriveNextRegionId(regions: TextElement[]): number {
+  return regions.reduce((maxId, region) => Math.max(maxId, region.id), 0) + 1;
+}
+
 export const useEditorStore = create<EditorState>((set, get) => ({
   originalImage: null,
   imageFile: null,
   imageMeta: null,
   pageModel: null,
+  baseAutoLayer: null,
+  currentLayer: null,
   canvas: null,
   canvasScale: 1,
   viewportZoom: 1,
@@ -281,6 +311,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   isDetecting: false,
   isCleaningBackground: false,
   sessionHydrated: false,
+  historyPast: [],
+  historyFuture: [],
+  nextRegionId: 1,
 
   loadImage: async (file: File) => {
     set({ isLoading: true });
@@ -291,11 +324,16 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         imageFile: file,
         imageMeta: { width, height },
         pageModel: null,
+        baseAutoLayer: null,
+        currentLayer: null,
         canvasScale: 1,
         isLoading: false,
         selectedElementId: null,
         isComparing: false,
         previewMode: 'final',
+        historyPast: [],
+        historyFuture: [],
+        nextRegionId: 1,
       });
     } catch (error) {
       console.error('Failed to load image:', error);
@@ -310,16 +348,24 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       throw new Error('Image metadata is missing');
     }
 
+    const regions = detections.map(createTextElement);
+    const nextRegionId = deriveNextRegionId(regions);
+
     set({
       pageModel: {
         imageId: imageFile?.name || `image-${Date.now()}`,
         originalWidth: imageMeta.width,
         originalHeight: imageMeta.height,
-        regions: detections.map(createTextElement),
+        regions,
         cleanLayer: null,
       },
-      selectedElementId: detections[0]?.index ?? null,
+      selectedElementId: regions[0]?.id ?? null,
       previewMode: 'final',
+      baseAutoLayer: null,
+      currentLayer: null,
+      historyPast: [],
+      historyFuture: [],
+      nextRegionId,
     });
   },
 
@@ -333,6 +379,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       selectedElementId: normalizedPageModel.regions[0]?.id ?? null,
       previewMode: 'final',
       sessionHydrated: true,
+      baseAutoLayer: null,
+      currentLayer: null,
+      historyPast: [],
+      historyFuture: [],
+      nextRegionId: deriveNextRegionId(normalizedPageModel.regions),
     });
   },
 
@@ -385,27 +436,43 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         cleanLayer: null,
       },
       previewMode: 'final',
+      nextRegionId: deriveNextRegionId(elements),
     });
   },
 
-  deleteElement: (id: number) => {
-    const { pageModel } = get();
+  deleteElement: async (id: number) => {
+    const { pageModel, historyPast, selectedElementId } = get();
     if (!pageModel) return;
 
-    const regions = replaceRegion(pageModel.regions, id, (region) => ({
-      ...region,
-      removed: true,
-    }));
-    const nextSelected = getActiveRegions(regions).find((region) => region.id !== id)?.id ?? null;
+    const patch = buildRestoreOriginalPatch({ regionIds: [id] });
+    const redo: PageMutation[] = [
+      { type: 'remove-region', regionId: id },
+      { type: 'apply-patch', patch },
+    ];
+    const undo: PageMutation[] = [
+      { type: 'restore-region', regionId: id },
+      { type: 'revert-patch', patchId: patch.id },
+    ];
+    const nextPageModel = applyMutations(pageModel, redo);
+    const nextSelected = getActiveRegions(nextPageModel.regions).find((region) => region.id !== id)?.id ?? null;
 
     set({
       pageModel: {
-        ...pageModel,
-        regions,
+        ...nextPageModel,
         cleanLayer: null,
       },
       selectedElementId: nextSelected,
       previewMode: 'final',
+      historyPast: [
+        ...historyPast,
+        {
+          redo,
+          undo,
+          selectedElementId,
+          nextSelectedElementId: nextSelected,
+        },
+      ],
+      historyFuture: [],
     });
   },
 
@@ -491,6 +558,64 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       previewMode: cleanLayer ? previewMode : 'final',
     });
   },
+  setBaseAutoLayer: (layer: string | null) => set({ baseAutoLayer: layer }),
+  setCurrentLayer: (layer: string | null) => set({ currentLayer: layer }),
+  applyPatch: (patch: ImagePatch) => {
+    const { pageModel, historyPast } = get();
+    if (!pageModel) return;
+
+    const redo: PageMutation[] = [{ type: 'apply-patch', patch }];
+    const undo: PageMutation[] = [{ type: 'revert-patch', patchId: patch.id }];
+    const nextPageModel = applyMutations(pageModel, redo);
+
+    set({
+      pageModel: nextPageModel,
+      historyPast: [...historyPast, { redo, undo }],
+      historyFuture: [],
+    });
+  },
+  applyAutoPatch: (patch: ImagePatch, autoChange: AutoChange) => {
+    const { pageModel, historyPast } = get();
+    if (!pageModel) return;
+
+    const redo: PageMutation[] = [{ type: 'apply-patch', patch, autoChange }];
+    const undo: PageMutation[] = [{ type: 'revert-patch', patchId: patch.id, autoChangeId: autoChange.id }];
+    const nextPageModel = applyMutations(pageModel, redo);
+
+    set({
+      pageModel: nextPageModel,
+      historyPast: [...historyPast, { redo, undo }],
+      historyFuture: [],
+    });
+  },
+  undo: async () => {
+    const { historyPast, historyFuture, pageModel, selectedElementId } = get();
+    if (!pageModel || historyPast.length === 0) return;
+
+    const entry = historyPast[historyPast.length - 1];
+    const nextPageModel = applyMutations(pageModel, entry.undo);
+
+    set({
+      pageModel: nextPageModel,
+      historyPast: historyPast.slice(0, -1),
+      historyFuture: [entry, ...historyFuture],
+      selectedElementId: entry.selectedElementId ?? selectedElementId,
+    });
+  },
+  redo: async () => {
+    const { historyPast, historyFuture, pageModel, selectedElementId } = get();
+    if (!pageModel || historyFuture.length === 0) return;
+
+    const entry = historyFuture[0];
+    const nextPageModel = applyMutations(pageModel, entry.redo);
+
+    set({
+      pageModel: nextPageModel,
+      historyPast: [...historyPast, entry],
+      historyFuture: historyFuture.slice(1),
+      selectedElementId: entry.nextSelectedElementId ?? selectedElementId,
+    });
+  },
 
   reset: () => {
     set({
@@ -498,6 +623,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       imageFile: null,
       imageMeta: null,
       pageModel: null,
+      baseAutoLayer: null,
+      currentLayer: null,
       canvas: null,
       canvasScale: 1,
       viewportZoom: 1,
@@ -510,6 +637,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       isLoading: false,
       isDetecting: false,
       isCleaningBackground: false,
+      historyPast: [],
+      historyFuture: [],
+      nextRegionId: 1,
     });
   },
 }));
