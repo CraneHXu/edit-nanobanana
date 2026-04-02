@@ -89,4 +89,39 @@ describe('editor mutations helpers', () => {
     expect(manual.excludedFromClean).toBe(true);
     expect(manual.confirmed).toBe(true);
   });
+
+  it('restore-region keeps its own excludedFromClean flag', () => {
+    const pageModel: PageModel = {
+      imageId: 'page',
+      originalWidth: 1,
+      originalHeight: 1,
+      regions: [createBaseRegion({ removed: true, excludedFromClean: true })],
+    };
+
+    const next = applyPageMutation(pageModel, { type: 'restore-region', regionId: 1 });
+
+    expect(next.regions[0].removed).toBe(false);
+    expect(next.regions[0].excludedFromClean).toBe(true);
+  });
+
+  it('manual region clones bounding boxes and bounds input', () => {
+    const bbox = { x: 5, y: 6, width: 10, height: 4 };
+    const manual = createManualTextElement({ id: 99, text: 'clone', bbox });
+
+    expect(manual.bbox).not.toBe(bbox);
+    expect(manual.sourceBounds).not.toBe(bbox);
+  });
+
+  it('revert-patch preserves undefined patches when there were none', () => {
+    const pageModel: PageModel = {
+      imageId: 'page',
+      originalWidth: 2,
+      originalHeight: 2,
+      regions: [createBaseRegion()],
+    };
+
+    const next = applyPageMutation(pageModel, { type: 'revert-patch', patchId: 'ghost' });
+
+    expect(next.patches).toBeUndefined();
+  });
 });

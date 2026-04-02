@@ -53,6 +53,8 @@ export function createManualTextElement(params: ManualTextElementParams): TextEl
   const fontColor = params.fontColor ?? DEFAULT_FONT_COLOR;
   const textColorRaw = params.textColorRaw ?? fontColor;
   const textColorQuantized = params.textColorQuantized ?? textColorRaw;
+  const normalizedBBox = { ...params.bbox };
+  const normalizedSourceBounds = params.sourceBounds ? { ...params.sourceBounds } : { ...params.bbox };
   const base: Omit<TextElement, 'original'> = {
     id: params.id,
     source: 'manual',
@@ -60,8 +62,8 @@ export function createManualTextElement(params: ManualTextElementParams): TextEl
     excludedFromClean: true,
     confirmed: true,
     lowConfidence: false,
-    sourceBounds: params.sourceBounds ?? params.bbox,
-    bbox: { ...params.bbox },
+    sourceBounds: normalizedSourceBounds,
+    bbox: normalizedBBox,
     sourcePolygon: params.sourcePolygon,
     rotation: params.rotation ?? 0,
     layoutOffsetY: params.layoutOffsetY ?? 0,
@@ -130,7 +132,6 @@ export function applyPageMutation(pageModel: PageModel, mutation: PageMutation):
         regions: mapRegionById(pageModel.regions, mutation.regionId, (region) => ({
           ...region,
           removed: false,
-          excludedFromClean: false,
           confirmed: true,
         })),
       };
@@ -169,14 +170,17 @@ export function applyPageMutation(pageModel: PageModel, mutation: PageMutation):
       };
     }
     case 'revert-patch': {
-      const nextPatches = (pageModel.patches ?? []).map((patch) =>
-        patch.id === mutation.patchId ? flagPatch(patch, false, true) : patch,
-      );
-      const nextAutoChanges = mutation.autoChangeId
-        ? (pageModel.autoChanges ?? []).map((change) =>
-            change.id === mutation.autoChangeId ? flagAutoChange(change, false, true) : change,
+      const nextPatches = pageModel.patches
+        ? pageModel.patches.map((patch) =>
+            patch.id === mutation.patchId ? flagPatch(patch, false, true) : patch,
           )
-        : pageModel.autoChanges;
+        : undefined;
+      const nextAutoChanges =
+        mutation.autoChangeId && pageModel.autoChanges
+          ? pageModel.autoChanges.map((change) =>
+              change.id === mutation.autoChangeId ? flagAutoChange(change, false, true) : change,
+            )
+          : pageModel.autoChanges;
 
       return {
         ...pageModel,
@@ -186,5 +190,9 @@ export function applyPageMutation(pageModel: PageModel, mutation: PageMutation):
     }
   }
 
-  return pageModel;
+  assertNever(mutation);
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unhandled page mutation ${JSON.stringify(value)}`);
 }
