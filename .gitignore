@@ -20,6 +20,9 @@ yarn-error.log*
 .env.development.local
 .env.test.local
 .env.production.local
+.local/iopaint/venv
+.local/iopaint/models
+.local/iopaint/*.log
 
 # Vercel
 .vercel
@@ -37,3 +40,6 @@ Thumbs.db
 # TypeScript
 *.tsbuildinfo
 next-env.d.ts
+
+# Local worktrees
+.worktrees
