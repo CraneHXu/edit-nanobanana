@@ -15,7 +15,9 @@ export type TextAlign = 'left' | 'center' | 'right';
 export type FontWeight = 'normal' | 'bold';
 export type TextColorMode = 'auto' | 'manual';
 export type BackgroundMode = 'none' | 'fill' | 'manual' | 'inpaint';
-export type PreviewMode = 'original' | 'clean' | 'final';
+export type RegionSource = 'ocr' | 'roi_ocr' | 'manual';
+export type PreviewMode = 'original' | 'auto' | 'current';
+export type PatchKind = 'local_clean' | 'auto_ai' | 'manual_ai' | 'restore_original';
 
 export interface TextElementSnapshot {
   bbox: OCRDetection['bounds'];
@@ -36,7 +38,11 @@ export interface TextElementSnapshot {
 
 export interface TextElement {
   id: number;
+  source?: RegionSource;
   removed: boolean;
+  excludedFromClean?: boolean;
+  confirmed?: boolean;
+  lowConfidence?: boolean;
   sourceBounds: OCRDetection['bounds'];
   bbox: OCRDetection['bounds'];
   sourcePolygon?: [number, number][];
@@ -66,10 +72,37 @@ export interface CanvasState {
   backgroundImage?: string;
 }
 
+export interface ImagePatch {
+  id: string;
+  kind: PatchKind;
+  regionIds: number[];
+  roiId?: string;
+  previewMode?: PreviewMode;
+  createdAt: number;
+  applied: boolean;
+  reverted: boolean;
+  description?: string;
+}
+
+export interface AutoChange {
+  id: string;
+  patchId: string;
+  patchKind: PatchKind;
+  previewMode?: PreviewMode;
+  regionIds: number[];
+  createdAt: number;
+  applied: boolean;
+  reverted: boolean;
+  description?: string;
+}
+
 export interface PageModel {
   imageId: string;
   originalWidth: number;
   originalHeight: number;
   regions: TextElement[];
+  previewMode?: PreviewMode;
+  patches?: ImagePatch[];
+  autoChanges?: AutoChange[];
   cleanLayer?: string | null;
 }
