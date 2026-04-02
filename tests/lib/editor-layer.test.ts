@@ -1,9 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { clampBounds } from '@/components/editor/CanvasEditor';
 import { buildRestoreOriginalPatch, composeCurrentLayer, resolvePreviewBackground } from '@/lib/editor-layer';
-import { useEditorStore } from '@/store/editorStore';
+import { getRoiOverlapRegionIds, useEditorStore } from '@/store/editorStore';
 import type { AutoChange, ImagePatch, PageModel, TextElement } from '@/types/canvas';
+import type { OCRDetection } from '@/types/ocr';
 
 const bounds = { x: 0, y: 0, width: 10, height: 4 };
 
@@ -65,6 +67,7 @@ function createPageModel(): PageModel {
     imageId: 'page',
     originalWidth: 100,
     originalHeight: 100,
+    cleanLayer: 'clean-0',
     regions: [createRegion()],
   };
 }
@@ -146,15 +149,20 @@ describe('editor store history actions', () => {
     const pageModel = createPageModel();
     useEditorStore.setState({
       pageModel,
+      baseAutoLayer: 'clean-0',
+      currentLayer: 'clean-0',
       historyPast: [],
       historyFuture: [],
       selectedElementId: pageModel.regions[0]?.id ?? null,
     });
 
     const patch = createPatch({ id: 'history-1', createdAt: 11 });
-    useEditorStore.getState().applyPatch(patch);
+    useEditorStore.getState().applyPatch(patch, 'clean-1');
 
     expect(useEditorStore.getState().pageModel?.patches?.[0]?.id).toBe('history-1');
+    expect(useEditorStore.getState().pageModel?.cleanLayer).toBe('clean-1');
+    expect(useEditorStore.getState().baseAutoLayer).toBe('clean-1');
+    expect(useEditorStore.getState().currentLayer).toBe('clean-1');
     expect(useEditorStore.getState().historyPast).toHaveLength(1);
     expect(useEditorStore.getState().historyFuture).toHaveLength(0);
 
@@ -167,6 +175,9 @@ describe('editor store history actions', () => {
       .pageModel?.patches?.find((item) => item.id === 'history-1');
     expect(patchAfterUndo?.applied).toBe(false);
     expect(patchAfterUndo?.reverted).toBe(true);
+    expect(useEditorStore.getState().pageModel?.cleanLayer).toBe('clean-0');
+    expect(useEditorStore.getState().baseAutoLayer).toBe('clean-0');
+    expect(useEditorStore.getState().currentLayer).toBe('clean-0');
 
     const redoResult = useEditorStore.getState().redo();
     expect(redoResult).toBeInstanceOf(Promise);
@@ -177,19 +188,39 @@ describe('editor store history actions', () => {
       .pageModel?.patches?.find((item) => item.id === 'history-1');
     expect(patchAfterRedo?.applied).toBe(true);
     expect(patchAfterRedo?.reverted).toBe(false);
+    expect(useEditorStore.getState().pageModel?.cleanLayer).toBe('clean-1');
+    expect(useEditorStore.getState().baseAutoLayer).toBe('clean-1');
+    expect(useEditorStore.getState().currentLayer).toBe('clean-1');
   });
 
-  it('applyAutoPatch stores auto changes', () => {
+  it('applyAutoPatch stores auto changes and replays current layer history', async () => {
     const pageModel = createPageModel();
-    useEditorStore.setState({ pageModel, historyPast: [], historyFuture: [] });
+    useEditorStore.setState({
+      pageModel,
+      baseAutoLayer: 'clean-0',
+      currentLayer: 'clean-0',
+      historyPast: [],
+      historyFuture: [],
+    });
 
     const patch = createPatch({ id: 'auto-1', createdAt: 22 });
     const autoChange = createAutoChange(patch);
 
-    useEditorStore.getState().applyAutoPatch(patch, autoChange);
+    useEditorStore.getState().applyAutoPatch(patch, autoChange, 'current-1');
 
     const stored = useEditorStore.getState().pageModel?.autoChanges?.[0];
     expect(stored?.id).toBe(autoChange.id);
+    expect(useEditorStore.getState().pageModel?.cleanLayer).toBe('clean-0');
+    expect(useEditorStore.getState().baseAutoLayer).toBe('clean-0');
+    expect(useEditorStore.getState().currentLayer).toBe('current-1');
+
+    await useEditorStore.getState().undo();
+    expect(useEditorStore.getState().pageModel?.cleanLayer).toBe('clean-0');
+    expect(useEditorStore.getState().baseAutoLayer).toBe('clean-0');
+    expect(useEditorStore.getState().currentLayer).toBe('clean-0');
+
+    await useEditorStore.getState().redo();
+    expect(useEditorStore.getState().currentLayer).toBe('current-1');
   });
 
   it('reset clears sessionHydrated and restores current preview mode', () => {
@@ -203,6 +234,64 @@ describe('editor store history actions', () => {
   });
 
   it.todo('deleteElement applies restore_original patch for removed regions');
+
+  it('getRoiOverlapRegionIds excludes manual regions from ROI overlap matching', () => {
+    const regions = [
+      createRegion({ id: 1, source: 'ocr', sourceBounds: { x: 10, y: 10, width: 20, height: 12 } }),
+      createRegion({ id: 2, source: 'manual', sourceBounds: { x: 12, y: 12, width: 18, height: 10 } }),
+      createRegion({ id: 3, source: 'ocr', sourceBounds: { x: 80, y: 80, width: 8, height: 8 } }),
+    ];
+
+    expect(getRoiOverlapRegionIds(regions, { x: 8, y: 8, width: 30, height: 20 })).toEqual([1]);
+  });
+
+  it('mergeRoiDetections only removes overlapping non-manual regions', () => {
+    const manualRegion = createRegion({
+      id: 2,
+      source: 'manual',
+      sourceBounds: { x: 12, y: 12, width: 18, height: 10 },
+      bbox: { x: 12, y: 12, width: 18, height: 10 },
+      original: {
+        bbox: { x: 12, y: 12, width: 18, height: 10 },
+      },
+    });
+    const pageModel = {
+      ...createPageModel(),
+      regions: [
+        createRegion({ id: 1, sourceBounds: { x: 10, y: 10, width: 20, height: 12 }, bbox: { x: 10, y: 10, width: 20, height: 12 } }),
+        manualRegion,
+      ],
+    };
+    const detection: OCRDetection = {
+      index: 0,
+      text: 'ROI',
+      confidence: 0.96,
+      bbox: [
+        [1, 1],
+        [11, 1],
+        [11, 7],
+        [1, 7],
+      ],
+      bounds: { x: 1, y: 1, width: 10, height: 6 },
+      textColor: { r: 0, g: 0, b: 0 },
+      bgColor: { r: 255, g: 255, b: 255 },
+    };
+
+    useEditorStore.setState({
+      pageModel,
+      nextRegionId: 3,
+      historyPast: [],
+      historyFuture: [],
+      selectedElementId: 1,
+    });
+
+    useEditorStore.getState().mergeRoiDetections({ x: 8, y: 8, width: 30, height: 20 }, [detection]);
+
+    const regions = useEditorStore.getState().pageModel?.regions ?? [];
+    expect(regions.find((region) => region.id === 1)?.removed).toBe(true);
+    expect(regions.find((region) => region.id === 2)?.removed).toBe(false);
+    expect(regions.find((region) => region.id === 3)?.source).toBe('roi_ocr');
+  });
 });
 
 describe('preview mode cleanup', () => {
@@ -229,5 +318,21 @@ describe('preview mode cleanup', () => {
         expect(content.includes(token)).toBe(false);
       }
     }
+  });
+});
+
+describe('CanvasEditor clampBounds', () => {
+  it('returns null instead of fabricating a blank 1x1 crop outside the image edge', () => {
+    expect(clampBounds({ x: 100, y: 20, width: 5, height: 5 }, 100, 100)).toBeNull();
+    expect(clampBounds({ x: 10, y: 100, width: 5, height: 5 }, 100, 100)).toBeNull();
+  });
+
+  it('preserves a 1px crop when the ROI still overlaps the image edge', () => {
+    expect(clampBounds({ x: 99.2, y: 20, width: 5, height: 5 }, 100, 100)).toEqual({
+      x: 99,
+      y: 20,
+      width: 1,
+      height: 5,
+    });
   });
 });

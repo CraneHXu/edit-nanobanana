@@ -6,7 +6,7 @@ import { detectText, inpaintRegion, mergePatchIntoImage } from '@/lib/api-client
 import { enhanceDetectionsWithStyles } from '@/lib/color-sampler';
 import { loadGoogleFont } from '@/lib/font-loader';
 import { generateCleanBackground } from '@/lib/clean-background';
-import { useEditorStore } from '@/store/editorStore';
+import { useEditorStore, getRoiOverlapRegionIds } from '@/store/editorStore';
 import type { EraserPath } from '@/types/canvas';
 import type { BoundingBox } from '@/types/ocr';
 import {
@@ -17,6 +17,7 @@ import {
   scaleBoundingBox,
   syncTextObject,
 } from '@/lib/fabric-utils';
+import { resolvePreviewBackground } from '@/lib/editor-layer';
 
 const DEFAULT_FONT = 'Noto Sans SC';
 
@@ -88,17 +89,21 @@ function toImageBounds(draftBox: DraftBox, scale: number): BoundingBox {
   };
 }
 
-function clampBounds(bounds: BoundingBox, width: number, height: number): BoundingBox {
-  const x = Math.max(0, Math.min(width, bounds.x));
-  const y = Math.max(0, Math.min(height, bounds.y));
-  const right = Math.max(x, Math.min(width, bounds.x + bounds.width));
-  const bottom = Math.max(y, Math.min(height, bounds.y + bounds.height));
+export function clampBounds(bounds: BoundingBox, width: number, height: number): BoundingBox | null {
+  const x = Math.max(0, Math.floor(bounds.x));
+  const y = Math.max(0, Math.floor(bounds.y));
+  const right = Math.min(width, Math.ceil(bounds.x + bounds.width));
+  const bottom = Math.min(height, Math.ceil(bounds.y + bounds.height));
+
+  if (right <= x || bottom <= y) {
+    return null;
+  }
 
   return {
     x,
     y,
-    width: Math.max(1, right - x),
-    height: Math.max(1, bottom - y),
+    width: right - x,
+    height: bottom - y,
   };
 }
 
@@ -118,9 +123,12 @@ async function cropImageAsset(
 ): Promise<{ dataUrl: string; file: File }> {
   const image = await loadImageElement(imageDataUrl);
   const crop = clampBounds(bounds, image.width, image.height);
+  if (!crop) {
+    throw new Error('ROI crop does not intersect the image bounds');
+  }
   const canvas = document.createElement('canvas');
-  canvas.width = Math.max(1, Math.round(crop.width));
-  canvas.height = Math.max(1, Math.round(crop.height));
+  canvas.width = Math.round(crop.width);
+  canvas.height = Math.round(crop.height);
 
   const context = canvas.getContext('2d');
   if (!context) {
@@ -196,8 +204,8 @@ export function CanvasEditor() {
     setPendingRoiAction,
     setIsDetecting,
     applyPatch,
-    setCurrentLayer,
     setPreviewMode,
+    isCleaningBackground,
   } = useEditorStore();
 
   useEffect(() => {
@@ -258,15 +266,14 @@ export function CanvasEditor() {
     const currentCanvas = fabricCanvasRef.current;
     if (!isCanvasValid(currentCanvas)) return;
 
-    const backgroundSource = (() => {
-      if (isComparing) {
-        return originalImage;
-      }
-      if (previewMode === 'auto' || previewMode === 'current') {
-        return pageModel?.cleanLayer || originalImage;
-      }
-      return originalImage;
-    })();
+    const backgroundSource = isComparing
+      ? originalImage
+      : resolvePreviewBackground({
+          previewMode,
+          originalImage,
+          baseAutoLayer: pageModel?.cleanLayer ?? useEditorStore.getState().baseAutoLayer,
+          currentLayer: useEditorStore.getState().currentLayer,
+        }) ?? originalImage;
 
     fabricModule.FabricImage.fromURL(backgroundSource)
       .then((img) => {
@@ -361,15 +368,11 @@ export function CanvasEditor() {
       return;
     }
 
-    const overlappingRegionIds = state.pageModel.regions
-      .filter((region) => !region.removed)
-      .filter((region) =>
-        region.sourceBounds.x < roiBounds.x + roiBounds.width
-        && region.sourceBounds.x + region.sourceBounds.width > roiBounds.x
-        && region.sourceBounds.y < roiBounds.y + roiBounds.height
-        && region.sourceBounds.y + region.sourceBounds.height > roiBounds.y,
-      )
-      .map((region) => region.id);
+    if (state.isDetecting || state.isCleaningBackground) {
+      return;
+    }
+
+    const overlappingRegionIds = getRoiOverlapRegionIds(state.pageModel.regions, roiBounds);
     const pageSize = {
       width: state.pageModel.originalWidth,
       height: state.pageModel.originalHeight,
@@ -394,7 +397,7 @@ export function CanvasEditor() {
     state.setIsCleaningBackground(true);
     try {
       const createdAt = Date.now();
-      const baseLayer = state.currentLayer ?? state.pageModel.cleanLayer ?? state.baseAutoLayer ?? state.originalImage;
+      const baseLayer = state.pageModel.cleanLayer ?? state.currentLayer ?? state.baseAutoLayer ?? state.originalImage;
 
       if (state.pendingRoiAction === 'local-repair') {
         const cleanLayer = await generateCleanBackground(state.originalImage, state.pageModel);
@@ -411,9 +414,7 @@ export function CanvasEditor() {
           applied: true,
           reverted: false,
           description: 'Manual ROI local repair',
-        });
-        useEditorStore.getState().setCurrentLayer(nextLayer);
-        useEditorStore.getState().setCleanLayer(nextLayer);
+        }, nextLayer);
         setPreviewMode('current');
         return;
       }
@@ -441,9 +442,7 @@ export function CanvasEditor() {
         applied: true,
         reverted: false,
         description: 'Manual ROI AI repair',
-      });
-      useEditorStore.getState().setCurrentLayer(nextLayer);
-      useEditorStore.getState().setCleanLayer(nextLayer);
+      }, nextLayer);
       setPreviewMode('current');
     } catch (error) {
       console.error('ROI repair failed:', error);
@@ -612,6 +611,13 @@ export function CanvasEditor() {
       currentCanvas.hoverCursor = 'crosshair';
 
       const handleMouseDown = (e: any) => {
+        if (editorMode === 'roi') {
+          const latestState = useEditorStore.getState();
+          if (latestState.isDetecting || latestState.isCleaningBackground) {
+            return;
+          }
+        }
+
         if (!e.pointer) {
           return;
         }
@@ -621,6 +627,15 @@ export function CanvasEditor() {
       };
 
       const handleMouseMove = (e: any) => {
+        if (editorMode === 'roi') {
+          const latestState = useEditorStore.getState();
+          if (latestState.isDetecting || latestState.isCleaningBackground) {
+            dragStartRef.current = null;
+            setDraftBox(null);
+            return;
+          }
+        }
+
         if (!e.pointer || !dragStartRef.current) {
           return;
         }
@@ -629,6 +644,15 @@ export function CanvasEditor() {
       };
 
       const handleMouseUp = (e: any) => {
+        if (editorMode === 'roi') {
+          const latestState = useEditorStore.getState();
+          if (latestState.isDetecting || latestState.isCleaningBackground) {
+            dragStartRef.current = null;
+            setDraftBox(null);
+            return;
+          }
+        }
+
         const start = dragStartRef.current;
         if (!start || !e.pointer) {
           dragStartRef.current = null;
@@ -699,7 +723,7 @@ export function CanvasEditor() {
     setCursorPos(null);
     dragStartRef.current = null;
     setDraftBox(null);
-  }, [addManualElement, applyRoiAction, editorMode, refreshCleanLayerFromStore, setEditorMode, setPendingRoiAction, updateElement]);
+  }, [addManualElement, applyRoiAction, editorMode, isCleaningBackground, isDetecting, refreshCleanLayerFromStore, setEditorMode, setPendingRoiAction, updateElement]);
 
   useEffect(() => {
     if (!fabricReady) return;

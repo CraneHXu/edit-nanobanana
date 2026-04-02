@@ -73,8 +73,8 @@ interface EditorState {
   setCleanLayer: (cleanLayer: string | null) => void;
   setBaseAutoLayer: (layer: string | null) => void;
   setCurrentLayer: (layer: string | null) => void;
-  applyPatch: (patch: ImagePatch) => void;
-  applyAutoPatch: (patch: ImagePatch, autoChange: AutoChange) => void;
+  applyPatch: (patch: ImagePatch, nextLayer?: string | null) => void;
+  applyAutoPatch: (patch: ImagePatch, autoChange: AutoChange, nextLayer?: string | null) => void;
   undo: () => Promise<void>;
   redo: () => Promise<void>;
   reset: () => void;
@@ -295,6 +295,14 @@ interface HistoryEntry {
   redo: PageMutation[];
   selectedElementId?: number | null;
   nextSelectedElementId?: number | null;
+  previousLayerState?: LayerHistoryState;
+  nextLayerState?: LayerHistoryState;
+}
+
+interface LayerHistoryState {
+  cleanLayer: string | null;
+  baseAutoLayer: string | null;
+  currentLayer: string | null;
 }
 
 function applyMutations(pageModel: PageModel, mutations: PageMutation[]): PageModel {
@@ -310,6 +318,35 @@ function intersectsBoundingBox(a: BoundingBox, b: BoundingBox): boolean {
     && a.x + a.width > b.x
     && a.y < b.y + b.height
     && a.y + a.height > b.y;
+}
+
+export function getRoiOverlapRegionIds(regions: TextElement[], roiBounds: BoundingBox): number[] {
+  return regions
+    .filter((region) => !region.removed && region.source !== 'manual' && intersectsBoundingBox(region.sourceBounds, roiBounds))
+    .map((region) => region.id);
+}
+
+function captureLayerState(state: Pick<EditorState, 'pageModel' | 'baseAutoLayer' | 'currentLayer'>): LayerHistoryState {
+  return {
+    cleanLayer: state.pageModel?.cleanLayer ?? null,
+    baseAutoLayer: state.baseAutoLayer,
+    currentLayer: state.currentLayer,
+  };
+}
+
+function createClearedLayerState(): LayerHistoryState {
+  return {
+    cleanLayer: null,
+    baseAutoLayer: null,
+    currentLayer: null,
+  };
+}
+
+function applyLayerState(pageModel: PageModel, layerState: LayerHistoryState): PageModel {
+  return {
+    ...pageModel,
+    cleanLayer: layerState.cleanLayer,
+  };
 }
 
 function shiftDetectionToPage(
@@ -480,6 +517,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         regions: replaceRegion(pageModel.regions, id, (region) => ({ ...region, ...updates })),
         cleanLayer: invalidateCleanLayer ? null : (pageModel.cleanLayer ?? null),
       },
+      baseAutoLayer: invalidateCleanLayer ? null : get().baseAutoLayer,
+      currentLayer: invalidateCleanLayer ? null : get().currentLayer,
       previewMode: invalidateCleanLayer ? 'current' : previewMode,
       autoAiRevision: nextRevision,
     });
@@ -495,6 +534,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         regions: elements,
         cleanLayer: null,
       },
+      baseAutoLayer: null,
+      currentLayer: null,
       previewMode: 'current',
       nextRegionId: deriveNextRegionId(elements),
       autoAiRevision: nextRevision,
@@ -502,7 +543,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   addManualElement: (bounds: BoundingBox) => {
-    const { pageModel, historyPast, selectedElementId, nextRegionId } = get();
+    const state = get();
+    const { pageModel, historyPast, selectedElementId, nextRegionId } = state;
     if (!pageModel) {
       return null;
     }
@@ -516,12 +558,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     });
     const nextPageModel = applyMutations(pageModel, [{ type: 'add-region', element }]);
     const nextRevision = get().autoAiRevision + 1;
+    const previousLayerState = captureLayerState(state);
+    const nextLayerState = createClearedLayerState();
 
     set({
-      pageModel: {
-        ...nextPageModel,
-        cleanLayer: null,
-      },
+      pageModel: applyLayerState(nextPageModel, nextLayerState),
+      baseAutoLayer: null,
+      currentLayer: null,
       selectedElementId: element.id,
       editorMode: 'select',
       pendingRoiAction: null,
@@ -533,6 +576,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           redo: [{ type: 'restore-region', regionId: element.id }],
           selectedElementId,
           nextSelectedElementId: element.id,
+          previousLayerState,
+          nextLayerState,
         },
       ],
       historyFuture: [],
@@ -544,14 +589,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   mergeRoiDetections: (roiBounds: BoundingBox, detections: OCRDetection[]) => {
-    const { pageModel, historyPast, nextRegionId, selectedElementId } = get();
+    const state = get();
+    const { pageModel, historyPast, nextRegionId, selectedElementId } = state;
     if (!pageModel) {
       return;
     }
 
-    const overlappingRegionIds = pageModel.regions
-      .filter((region) => !region.removed && region.source !== 'manual' && intersectsBoundingBox(region.sourceBounds, roiBounds))
-      .map((region) => region.id);
+    const overlappingRegionIds = getRoiOverlapRegionIds(pageModel.regions, roiBounds);
     const nextRegions = detections.map((detection, index) => {
       const shifted = shiftDetectionToPage(detection, roiBounds.x, roiBounds.y, nextRegionId + index);
       return {
@@ -583,12 +627,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const nextActiveRegions = getActiveRegions(nextPageModel.regions);
     const nextSelectedElementId = nextRegions[0]?.id ?? nextActiveRegions[0]?.id ?? null;
     const nextRevision = get().autoAiRevision + 1;
+    const previousLayerState = captureLayerState(state);
+    const nextLayerState = createClearedLayerState();
 
     set({
-      pageModel: {
-        ...nextPageModel,
-        cleanLayer: null,
-      },
+      pageModel: applyLayerState(nextPageModel, nextLayerState),
+      baseAutoLayer: null,
+      currentLayer: null,
       selectedElementId: nextSelectedElementId,
       editorMode: 'select',
       pendingRoiAction: null,
@@ -600,6 +645,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           redo,
           selectedElementId,
           nextSelectedElementId,
+          previousLayerState,
+          nextLayerState,
         },
       ],
       historyFuture: [],
@@ -609,7 +656,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   deleteElement: async (id: number) => {
-    const { pageModel, historyPast, selectedElementId } = get();
+    const state = get();
+    const { pageModel, historyPast, selectedElementId } = state;
     if (!pageModel) return;
 
     const patch = buildRestoreOriginalPatch({ regionIds: [id] });
@@ -624,12 +672,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const nextPageModel = applyMutations(pageModel, redo);
     const nextSelected = getActiveRegions(nextPageModel.regions).find((region) => region.id !== id)?.id ?? null;
     const nextRevision = get().autoAiRevision + 1;
+    const previousLayerState = captureLayerState(state);
+    const nextLayerState = createClearedLayerState();
 
     set({
-      pageModel: {
-        ...nextPageModel,
-        cleanLayer: null,
-      },
+      pageModel: applyLayerState(nextPageModel, nextLayerState),
+      baseAutoLayer: null,
+      currentLayer: null,
       selectedElementId: nextSelected,
       previewMode: 'current',
       historyPast: [
@@ -639,6 +688,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           undo,
           selectedElementId,
           nextSelectedElementId: nextSelected,
+          previousLayerState,
+          nextLayerState,
         },
       ],
       historyFuture: [],
@@ -680,6 +731,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         })),
         cleanLayer: null,
       },
+      baseAutoLayer: null,
+      currentLayer: null,
       previewMode: 'current',
       autoAiRevision: nextRevision,
     });
@@ -707,6 +760,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         })),
         cleanLayer: null,
       },
+      baseAutoLayer: null,
+      currentLayer: null,
       selectedElementId: pageModel.regions[0]?.id ?? null,
       previewMode: 'current',
       autoAiRevision: nextRevision,
@@ -729,43 +784,68 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     if (!pageModel) return;
 
     set({
-      pageModel: {
-        ...pageModel,
+      pageModel: applyLayerState(pageModel, {
         cleanLayer,
-      },
+        baseAutoLayer: cleanLayer,
+        currentLayer: cleanLayer,
+      }),
+      baseAutoLayer: cleanLayer,
+      currentLayer: cleanLayer,
       previewMode: cleanLayer ? previewMode : 'current',
     });
   },
   setBaseAutoLayer: (layer: string | null) => set({ baseAutoLayer: layer }),
   setCurrentLayer: (layer: string | null) => set({ currentLayer: layer }),
-  applyPatch: (patch: ImagePatch) => {
-    const { pageModel, historyPast } = get();
+  applyPatch: (patch: ImagePatch, nextLayer?: string | null) => {
+    const state = get();
+    const { pageModel, historyPast } = state;
     if (!pageModel) return;
 
     const redo: PageMutation[] = [{ type: 'apply-patch', patch }];
     const undo: PageMutation[] = [{ type: 'revert-patch', patchId: patch.id }];
     const nextPageModel = applyMutations(pageModel, redo);
     const nextRevision = get().autoAiRevision + 1;
+    const previousLayerState = captureLayerState(state);
+    const nextLayerState = nextLayer == null
+      ? previousLayerState
+      : {
+          cleanLayer: nextLayer,
+          baseAutoLayer: nextLayer,
+          currentLayer: nextLayer,
+        };
 
     set({
-      pageModel: nextPageModel,
-      historyPast: [...historyPast, { redo, undo }],
+      pageModel: applyLayerState(nextPageModel, nextLayerState),
+      baseAutoLayer: nextLayerState.baseAutoLayer,
+      currentLayer: nextLayerState.currentLayer,
+      historyPast: [...historyPast, { redo, undo, previousLayerState, nextLayerState }],
       historyFuture: [],
       autoAiRevision: nextRevision,
     });
   },
-  applyAutoPatch: (patch: ImagePatch, autoChange: AutoChange) => {
-    const { pageModel, historyPast } = get();
+  applyAutoPatch: (patch: ImagePatch, autoChange: AutoChange, nextLayer?: string | null) => {
+    const state = get();
+    const { pageModel, historyPast } = state;
     if (!pageModel) return;
 
     const redo: PageMutation[] = [{ type: 'apply-patch', patch, autoChange }];
     const undo: PageMutation[] = [{ type: 'revert-patch', patchId: patch.id, autoChangeId: autoChange.id }];
     const nextPageModel = applyMutations(pageModel, redo);
     const nextRevision = get().autoAiRevision + 1;
+    const previousLayerState = captureLayerState(state);
+    const nextLayerState = nextLayer == null
+      ? undefined
+      : {
+          cleanLayer: previousLayerState.cleanLayer,
+          baseAutoLayer: previousLayerState.baseAutoLayer,
+          currentLayer: nextLayer,
+        };
 
     set({
-      pageModel: nextPageModel,
-      historyPast: [...historyPast, { redo, undo }],
+      pageModel: nextLayerState ? applyLayerState(nextPageModel, nextLayerState) : nextPageModel,
+      baseAutoLayer: nextLayerState?.baseAutoLayer ?? state.baseAutoLayer,
+      currentLayer: nextLayerState?.currentLayer ?? state.currentLayer,
+      historyPast: [...historyPast, { redo, undo, previousLayerState: nextLayerState ? previousLayerState : undefined, nextLayerState }],
       historyFuture: [],
       autoAiRevision: nextRevision,
     });
@@ -777,9 +857,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const entry = historyPast[historyPast.length - 1];
     const nextPageModel = applyMutations(pageModel, entry.undo);
     const nextRevision = get().autoAiRevision + 1;
+    const pageModelWithLayers = entry.previousLayerState ? applyLayerState(nextPageModel, entry.previousLayerState) : nextPageModel;
 
     set({
-      pageModel: nextPageModel,
+      pageModel: pageModelWithLayers,
+      baseAutoLayer: entry.previousLayerState?.baseAutoLayer ?? get().baseAutoLayer,
+      currentLayer: entry.previousLayerState?.currentLayer ?? get().currentLayer,
       historyPast: historyPast.slice(0, -1),
       historyFuture: [entry, ...historyFuture],
       selectedElementId: entry.selectedElementId ?? selectedElementId,
@@ -793,9 +876,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const entry = historyFuture[0];
     const nextPageModel = applyMutations(pageModel, entry.redo);
     const nextRevision = get().autoAiRevision + 1;
+    const pageModelWithLayers = entry.nextLayerState ? applyLayerState(nextPageModel, entry.nextLayerState) : nextPageModel;
 
     set({
-      pageModel: nextPageModel,
+      pageModel: pageModelWithLayers,
+      baseAutoLayer: entry.nextLayerState?.baseAutoLayer ?? get().baseAutoLayer,
+      currentLayer: entry.nextLayerState?.currentLayer ?? get().currentLayer,
       historyPast: [...historyPast, entry],
       historyFuture: historyFuture.slice(1),
       selectedElementId: entry.nextSelectedElementId ?? selectedElementId,

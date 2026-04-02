@@ -1,10 +1,28 @@
 import React from 'react';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { act, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import { Toolbar } from '@/components/editor/Toolbar';
 import { useEditorStore } from '@/store/editorStore';
 import { useI18n } from '@/lib/i18n';
 import type { PageModel } from '@/types/canvas';
+
+vi.mock('@/components/ui/select', () => {
+  const Select = ({ children }: { children: React.ReactNode }) => <div>{children}</div>;
+  const SelectTrigger = ({ children, className }: { children: React.ReactNode; className?: string }) => (
+    <div className={className}>{children}</div>
+  );
+  const SelectValue = () => null;
+  const SelectContent = ({ children }: { children: React.ReactNode }) => <div>{children}</div>;
+  const SelectItem = ({ children }: { children: React.ReactNode }) => <div>{children}</div>;
+
+  return {
+    Select,
+    SelectTrigger,
+    SelectValue,
+    SelectContent,
+    SelectItem,
+  };
+});
 
 function createPageModel(): PageModel {
   return {
@@ -67,13 +85,25 @@ function createPageModel(): PageModel {
 }
 
 describe('Toolbar ROI actions', () => {
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+
   beforeEach(() => {
-    useEditorStore.getState().reset();
-    useI18n.setState({ locale: 'en' });
+    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 
-  afterEach(() => {
-    useEditorStore.getState().reset();
+  beforeEach(async () => {
+    await act(async () => {
+      useEditorStore.getState().reset();
+      useI18n.setState({ locale: 'en' });
+    });
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      cleanup();
+      useEditorStore.getState().reset();
+    });
+    consoleErrorSpy.mockRestore();
   });
 
   it('shows ROI correction actions and add text entry when image and ROI exist', async () => {
@@ -90,5 +120,6 @@ describe('Toolbar ROI actions', () => {
     expect(screen.getByRole('button', { name: 'Local repair' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'AI repair' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add text mode' })).toBeInTheDocument();
+    expect(consoleErrorSpy.mock.calls.map((args) => args.join(' ')).join('\n')).not.toContain('not wrapped in act');
   });
 });
