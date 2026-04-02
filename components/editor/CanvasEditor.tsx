@@ -2,10 +2,13 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { Canvas as FabricCanvas } from 'fabric';
+import { detectText, inpaintRegion, mergePatchIntoImage } from '@/lib/api-client';
+import { enhanceDetectionsWithStyles } from '@/lib/color-sampler';
 import { loadGoogleFont } from '@/lib/font-loader';
 import { generateCleanBackground } from '@/lib/clean-background';
 import { useEditorStore } from '@/store/editorStore';
 import type { EraserPath } from '@/types/canvas';
+import type { BoundingBox } from '@/types/ocr';
 import {
   createTextObject,
   expandBoundingBox,
@@ -19,6 +22,13 @@ const DEFAULT_FONT = 'Noto Sans SC';
 
 type RuntimeBinding = {
   textObj: FabricTextObject;
+};
+
+type DraftBox = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 };
 
 let fabricModule: typeof import('fabric') | null = null;
@@ -60,6 +70,92 @@ function roundToImagePixel(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
+function normalizeDraftBox(start: { x: number; y: number }, end: { x: number; y: number }): DraftBox {
+  return {
+    x: Math.min(start.x, end.x),
+    y: Math.min(start.y, end.y),
+    width: Math.abs(end.x - start.x),
+    height: Math.abs(end.y - start.y),
+  };
+}
+
+function toImageBounds(draftBox: DraftBox, scale: number): BoundingBox {
+  return {
+    x: roundToImagePixel(draftBox.x / scale),
+    y: roundToImagePixel(draftBox.y / scale),
+    width: Math.max(1, roundToImagePixel(draftBox.width / scale)),
+    height: Math.max(1, roundToImagePixel(draftBox.height / scale)),
+  };
+}
+
+function clampBounds(bounds: BoundingBox, width: number, height: number): BoundingBox {
+  const x = Math.max(0, Math.min(width, bounds.x));
+  const y = Math.max(0, Math.min(height, bounds.y));
+  const right = Math.max(x, Math.min(width, bounds.x + bounds.width));
+  const bottom = Math.max(y, Math.min(height, bounds.y + bounds.height));
+
+  return {
+    x,
+    y,
+    width: Math.max(1, right - x),
+    height: Math.max(1, bottom - y),
+  };
+}
+
+async function loadImageElement(imageDataUrl: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Failed to load image'));
+    image.src = imageDataUrl;
+  });
+}
+
+async function cropImageAsset(
+  imageDataUrl: string,
+  bounds: BoundingBox,
+  fileName: string,
+): Promise<{ dataUrl: string; file: File }> {
+  const image = await loadImageElement(imageDataUrl);
+  const crop = clampBounds(bounds, image.width, image.height);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(crop.width));
+  canvas.height = Math.max(1, Math.round(crop.height));
+
+  const context = canvas.getContext('2d');
+  if (!context) {
+    throw new Error('Failed to create crop canvas context');
+  }
+
+  context.drawImage(
+    image,
+    crop.x,
+    crop.y,
+    crop.width,
+    crop.height,
+    0,
+    0,
+    crop.width,
+    crop.height,
+  );
+
+  const file = await new Promise<File>((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        reject(new Error('Failed to build crop blob'));
+        return;
+      }
+
+      resolve(new File([blob], fileName, { type: 'image/png' }));
+    }, 'image/png');
+  });
+
+  return {
+    dataUrl: canvas.toDataURL('image/png'),
+    file,
+  };
+}
+
 export function CanvasEditor() {
   const containerRef = useRef<HTMLDivElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -70,9 +166,11 @@ export function CanvasEditor() {
   const pageModelRef = useRef(useEditorStore.getState().pageModel);
   const eraserSizeRef = useRef(useEditorStore.getState().eraserSize);
   const eraserMutatedRef = useRef(false);
+  const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const [fabricReady, setFabricReady] = useState(false);
   const [fontLoaded, setFontLoaded] = useState(false);
   const [cursorPos, setCursorPos] = useState<{ x: number; y: number } | null>(null);
+  const [draftBox, setDraftBox] = useState<DraftBox | null>(null);
   const isDrawingRef = useRef(false);
 
   const {
@@ -84,13 +182,22 @@ export function CanvasEditor() {
     setIsCleaningBackground,
     setSelectedElement,
     updateElement,
+    addManualElement,
+    mergeRoiDetections,
     isDetecting,
     editorMode,
+    pendingRoiAction,
     eraserSize,
     isComparing,
     previewMode,
     viewportZoom,
     setViewportZoom,
+    setEditorMode,
+    setPendingRoiAction,
+    setIsDetecting,
+    applyPatch,
+    setCurrentLayer,
+    setPreviewMode,
   } = useEditorStore();
 
   useEffect(() => {
@@ -248,6 +355,104 @@ export function CanvasEditor() {
     }
   }, [setCleanLayer, setIsCleaningBackground]);
 
+  const applyRoiAction = useCallback(async (roiBounds: BoundingBox) => {
+    const state = useEditorStore.getState();
+    if (!state.originalImage || !state.pageModel || !state.pendingRoiAction) {
+      return;
+    }
+
+    const overlappingRegionIds = state.pageModel.regions
+      .filter((region) => !region.removed)
+      .filter((region) =>
+        region.sourceBounds.x < roiBounds.x + roiBounds.width
+        && region.sourceBounds.x + region.sourceBounds.width > roiBounds.x
+        && region.sourceBounds.y < roiBounds.y + roiBounds.height
+        && region.sourceBounds.y + region.sourceBounds.height > roiBounds.y,
+      )
+      .map((region) => region.id);
+    const pageSize = {
+      width: state.pageModel.originalWidth,
+      height: state.pageModel.originalHeight,
+    };
+
+    if (state.pendingRoiAction === 'ocr') {
+      state.setIsDetecting(true);
+      try {
+        const crop = await cropImageAsset(state.originalImage, roiBounds, 'roi-ocr.png');
+        const response = await detectText(crop.file);
+        const detections = await enhanceDetectionsWithStyles(response.detections, crop.dataUrl);
+        mergeRoiDetections(roiBounds, detections);
+      } catch (error) {
+        console.error('ROI OCR failed:', error);
+        alert(`ROI OCR failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      } finally {
+        useEditorStore.getState().setIsDetecting(false);
+      }
+      return;
+    }
+
+    state.setIsCleaningBackground(true);
+    try {
+      const createdAt = Date.now();
+      const baseLayer = state.currentLayer ?? state.pageModel.cleanLayer ?? state.baseAutoLayer ?? state.originalImage;
+
+      if (state.pendingRoiAction === 'local-repair') {
+        const cleanLayer = await generateCleanBackground(state.originalImage, state.pageModel);
+        const patchAsset = await cropImageAsset(cleanLayer, roiBounds, 'roi-local-repair.png');
+        const nextLayer = await mergePatchIntoImage(baseLayer, patchAsset.dataUrl, roiBounds, pageSize);
+
+        applyPatch({
+          id: `local-clean-${createdAt}`,
+          kind: 'local_clean',
+          regionIds: overlappingRegionIds,
+          roiId: `roi-${createdAt}`,
+          previewMode: 'current',
+          createdAt,
+          applied: true,
+          reverted: false,
+          description: 'Manual ROI local repair',
+        });
+        useEditorStore.getState().setCurrentLayer(nextLayer);
+        useEditorStore.getState().setCleanLayer(nextLayer);
+        setPreviewMode('current');
+        return;
+      }
+
+      const response = await inpaintRegion({
+        imageDataUrl: state.originalImage,
+        source: 'original',
+        sourceBounds: roiBounds,
+        pageSize,
+      });
+      const patchImage = response.patch ?? response.imageDataUrl;
+      const patchCrop = response.crop ?? roiBounds;
+      if (!patchImage) {
+        throw new Error('AI repair returned no patch image');
+      }
+
+      const nextLayer = await mergePatchIntoImage(baseLayer, patchImage, patchCrop, pageSize);
+      applyPatch({
+        id: response.patchId ?? `manual-ai-${createdAt}`,
+        kind: 'manual_ai',
+        regionIds: overlappingRegionIds,
+        roiId: `roi-${createdAt}`,
+        previewMode: 'current',
+        createdAt,
+        applied: true,
+        reverted: false,
+        description: 'Manual ROI AI repair',
+      });
+      useEditorStore.getState().setCurrentLayer(nextLayer);
+      useEditorStore.getState().setCleanLayer(nextLayer);
+      setPreviewMode('current');
+    } catch (error) {
+      console.error('ROI repair failed:', error);
+      alert(`${state.pendingRoiAction === 'ai-repair' ? 'AI repair' : 'Local repair'} failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      useEditorStore.getState().setIsCleaningBackground(false);
+    }
+  }, [applyPatch, mergeRoiDetections, setPreviewMode]);
+
   useEffect(() => {
     if (!fabricReady || !fabricModule || !fontLoaded) return;
 
@@ -395,6 +600,92 @@ export function CanvasEditor() {
       };
     }
 
+    if (editorMode === 'add-text' || editorMode === 'roi') {
+      currentCanvas.selection = false;
+      currentCanvas.discardActiveObject();
+      currentCanvas.forEachObject((obj: any) => {
+        obj._prevSelectable = obj.selectable;
+        obj.selectable = false;
+        obj.evented = false;
+      });
+      currentCanvas.defaultCursor = 'crosshair';
+      currentCanvas.hoverCursor = 'crosshair';
+
+      const handleMouseDown = (e: any) => {
+        if (!e.pointer) {
+          return;
+        }
+
+        dragStartRef.current = { x: e.pointer.x, y: e.pointer.y };
+        setDraftBox({ x: e.pointer.x, y: e.pointer.y, width: 0, height: 0 });
+      };
+
+      const handleMouseMove = (e: any) => {
+        if (!e.pointer || !dragStartRef.current) {
+          return;
+        }
+
+        setDraftBox(normalizeDraftBox(dragStartRef.current, e.pointer));
+      };
+
+      const handleMouseUp = (e: any) => {
+        const start = dragStartRef.current;
+        if (!start || !e.pointer) {
+          dragStartRef.current = null;
+          setDraftBox(null);
+          return;
+        }
+
+        const nextDraftBox = normalizeDraftBox(start, e.pointer);
+        dragStartRef.current = null;
+        setDraftBox(null);
+
+        if (nextDraftBox.width < 4 || nextDraftBox.height < 4) {
+          return;
+        }
+
+        const bounds = toImageBounds(nextDraftBox, imageScaleRef.current || 1);
+        if (editorMode === 'add-text') {
+          addManualElement(bounds);
+          return;
+        }
+
+        void applyRoiAction(bounds).finally(() => {
+          setEditorMode('select');
+          setPendingRoiAction(null);
+        });
+      };
+
+      const handleMouseOut = () => {
+        dragStartRef.current = null;
+        setDraftBox(null);
+      };
+
+      currentCanvas.on('mouse:down', handleMouseDown);
+      currentCanvas.on('mouse:move', handleMouseMove);
+      currentCanvas.on('mouse:up', handleMouseUp);
+      currentCanvas.on('mouse:out', handleMouseOut);
+
+      return () => {
+        if (!isCanvasValid(fabricCanvasRef.current)) return;
+
+        fabricCanvasRef.current.off('mouse:down', handleMouseDown);
+        fabricCanvasRef.current.off('mouse:move', handleMouseMove);
+        fabricCanvasRef.current.off('mouse:up', handleMouseUp);
+        fabricCanvasRef.current.off('mouse:out', handleMouseOut);
+        fabricCanvasRef.current.selection = true;
+        fabricCanvasRef.current.forEachObject((obj: any) => {
+          if (obj._prevSelectable !== undefined) {
+            obj.selectable = obj._prevSelectable;
+            obj.evented = true;
+            delete obj._prevSelectable;
+          }
+        });
+        dragStartRef.current = null;
+        setDraftBox(null);
+      };
+    }
+
     currentCanvas.selection = true;
     currentCanvas.forEachObject((obj: any) => {
       if (obj._prevSelectable !== undefined) {
@@ -406,7 +697,9 @@ export function CanvasEditor() {
     currentCanvas.defaultCursor = 'default';
     currentCanvas.hoverCursor = 'move';
     setCursorPos(null);
-  }, [editorMode, refreshCleanLayerFromStore, updateElement]);
+    dragStartRef.current = null;
+    setDraftBox(null);
+  }, [addManualElement, applyRoiAction, editorMode, refreshCleanLayerFromStore, setEditorMode, setPendingRoiAction, updateElement]);
 
   useEffect(() => {
     if (!fabricReady) return;
@@ -476,6 +769,17 @@ export function CanvasEditor() {
                 top: cursorPos.y - eraserSize / 2,
                 width: eraserSize,
                 height: eraserSize,
+              }}
+            />
+          )}
+          {draftBox && (
+            <div
+              className={`absolute pointer-events-none border-2 ${editorMode === 'add-text' ? 'border-sky-500 bg-sky-500/10' : 'border-amber-500 bg-amber-500/10'}`}
+              style={{
+                left: draftBox.x,
+                top: draftBox.y,
+                width: draftBox.width,
+                height: draftBox.height,
               }}
             />
           )}

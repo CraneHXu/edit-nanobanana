@@ -4,7 +4,7 @@ import React from 'react';
 import { Button } from '@/components/ui/button';
 import { Download, RotateCcw, Globe, RefreshCw, MousePointer, Eraser, Eye, ZoomIn, ZoomOut, Maximize2, Sparkles, Layers3 } from 'lucide-react';
 import { Slider } from '@/components/ui/slider';
-import { useEditorStore, EditorMode } from '@/store/editorStore';
+import { useEditorStore, EditorMode, RoiAction } from '@/store/editorStore';
 import { exportCanvasAsPNG } from '@/lib/fabric-utils';
 import { useI18n, Locale } from '@/lib/i18n';
 import { generateCleanBackground } from '@/lib/clean-background';
@@ -25,7 +25,9 @@ export function Toolbar() {
     originalImage,
     pageModel,
     editorMode,
+    pendingRoiAction,
     setEditorMode,
+    setPendingRoiAction,
     previewMode,
     setPreviewMode,
     eraserSize,
@@ -90,6 +92,27 @@ export function Toolbar() {
     setEditorMode(mode);
   };
 
+  const handleAddTextMode = () => {
+    if (editorMode === 'add-text') {
+      setEditorMode('select');
+      return;
+    }
+
+    setPendingRoiAction(null);
+    setEditorMode('add-text');
+  };
+
+  const handleRoiAction = (action: RoiAction) => {
+    if (editorMode === 'roi' && pendingRoiAction === action) {
+      setPendingRoiAction(null);
+      setEditorMode('select');
+      return;
+    }
+
+    setPendingRoiAction(action);
+    setEditorMode('roi');
+  };
+
   return (
     <div className="flex items-center justify-between px-6 py-4 bg-white border-b">
       <div>
@@ -117,6 +140,41 @@ export function Toolbar() {
                 title={t('toolbar.eraserMode')}
               >
                 <Eraser className="w-4 h-4" />
+              </Button>
+              <Button
+                variant={editorMode === 'add-text' ? 'default' : 'ghost'}
+                size="sm"
+                onClick={handleAddTextMode}
+                disabled={!pageModel}
+              >
+                Add text mode
+              </Button>
+            </div>
+
+            <div className="flex items-center gap-1 border rounded-md p-1">
+              <Button
+                variant={editorMode === 'roi' && pendingRoiAction === 'ocr' ? 'default' : 'ghost'}
+                size="sm"
+                onClick={() => handleRoiAction('ocr')}
+                disabled={!pageModel}
+              >
+                ROI OCR
+              </Button>
+              <Button
+                variant={editorMode === 'roi' && pendingRoiAction === 'local-repair' ? 'default' : 'ghost'}
+                size="sm"
+                onClick={() => handleRoiAction('local-repair')}
+                disabled={!pageModel}
+              >
+                Local repair
+              </Button>
+              <Button
+                variant={editorMode === 'roi' && pendingRoiAction === 'ai-repair' ? 'default' : 'ghost'}
+                size="sm"
+                onClick={() => handleRoiAction('ai-repair')}
+                disabled={!pageModel}
+              >
+                AI repair
               </Button>
             </div>
 

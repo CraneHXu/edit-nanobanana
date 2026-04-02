@@ -187,9 +187,9 @@ export function TextControls() {
     }
   };
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (selectedElementId !== null) {
-      deleteElement(selectedElementId);
+      await deleteElement(selectedElementId);
     }
   };
 
@@ -392,7 +392,9 @@ export function TextControls() {
         <Button
           variant="destructive"
           className="w-full"
-          onClick={handleDelete}
+          onClick={() => {
+            void handleDelete();
+          }}
         >
           <Trash2 className="w-4 h-4 mr-2" />
           {t('controls.deleteRegion')}

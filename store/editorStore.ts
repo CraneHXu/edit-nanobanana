@@ -3,13 +3,14 @@
  */
 
 import { create } from 'zustand';
-import { applyPageMutation, PageMutation } from '@/lib/editor-mutations';
+import { applyPageMutation, createManualTextElement, PageMutation } from '@/lib/editor-mutations';
 import { buildRestoreOriginalPatch } from '@/lib/editor-layer';
 import { estimateFontSizeToBox } from '@/lib/text-layout';
 import { BoundingBox, OCRDetection } from '@/types/ocr';
 import { AutoChange, ImagePatch, PageModel, PreviewMode, TextElement } from '@/types/canvas';
 
-export type EditorMode = 'select' | 'eraser';
+export type EditorMode = 'select' | 'eraser' | 'add-text' | 'roi';
+export type RoiAction = 'ocr' | 'local-repair' | 'ai-repair';
 
 interface ImageMeta {
   width: number;
@@ -30,6 +31,7 @@ interface EditorState {
   viewportPan: { x: number; y: number };
   selectedElementId: number | null;
   editorMode: EditorMode;
+  pendingRoiAction: RoiAction | null;
   previewMode: PreviewMode;
   eraserSize: number;
   isComparing: boolean;
@@ -54,6 +56,8 @@ interface EditorState {
   resetZoom: () => void;
   updateElement: (id: number, updates: Partial<TextElement>) => void;
   replaceElements: (elements: TextElement[]) => void;
+  addManualElement: (bounds: BoundingBox) => number | null;
+  mergeRoiDetections: (roiBounds: BoundingBox, detections: OCRDetection[]) => void;
   deleteElement: (id: number) => Promise<void>;
   toggleShowText: (id: number) => void;
   resetElement: (id: number) => void;
@@ -61,6 +65,7 @@ interface EditorState {
   setSelectedElement: (id: number | null) => void;
   setIsDetecting: (isDetecting: boolean) => void;
   setEditorMode: (mode: EditorMode) => void;
+  setPendingRoiAction: (action: RoiAction | null) => void;
   setPreviewMode: (mode: PreviewMode) => void;
   setEraserSize: (size: number) => void;
   setIsComparing: (isComparing: boolean) => void;
@@ -300,6 +305,32 @@ function deriveNextRegionId(regions: TextElement[]): number {
   return regions.reduce((maxId, region) => Math.max(maxId, region.id), 0) + 1;
 }
 
+function intersectsBoundingBox(a: BoundingBox, b: BoundingBox): boolean {
+  return a.x < b.x + b.width
+    && a.x + a.width > b.x
+    && a.y < b.y + b.height
+    && a.y + a.height > b.y;
+}
+
+function shiftDetectionToPage(
+  detection: OCRDetection,
+  offsetX: number,
+  offsetY: number,
+  nextId: number,
+): OCRDetection {
+  return {
+    ...detection,
+    index: nextId,
+    bbox: detection.bbox.map(([x, y]) => [x + offsetX, y + offsetY] as [number, number]),
+    bounds: {
+      x: detection.bounds.x + offsetX,
+      y: detection.bounds.y + offsetY,
+      width: detection.bounds.width,
+      height: detection.bounds.height,
+    },
+  };
+}
+
 export const useEditorStore = create<EditorState>((set, get) => ({
   originalImage: null,
   imageFile: null,
@@ -314,6 +345,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   viewportPan: { x: 0, y: 0 },
   selectedElementId: null,
   editorMode: 'select',
+  pendingRoiAction: null,
   previewMode: 'current',
   eraserSize: 20,
   isComparing: false,
@@ -347,6 +379,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         selectedElementId: null,
         isComparing: false,
         previewMode: 'current',
+        pendingRoiAction: null,
         sessionHydrated: false,
         historyPast: [],
         historyFuture: [],
@@ -380,6 +413,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       },
       selectedElementId: regions[0]?.id ?? null,
       previewMode: 'current',
+      pendingRoiAction: null,
       baseAutoLayer: null,
       currentLayer: null,
       historyPast: [],
@@ -399,6 +433,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       pageModel: normalizedPageModel,
       selectedElementId: normalizedPageModel.regions[0]?.id ?? null,
       previewMode: 'current',
+      pendingRoiAction: null,
       sessionHydrated: true,
       baseAutoLayer: null,
       currentLayer: null,
@@ -462,6 +497,113 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       },
       previewMode: 'current',
       nextRegionId: deriveNextRegionId(elements),
+      autoAiRevision: nextRevision,
+    });
+  },
+
+  addManualElement: (bounds: BoundingBox) => {
+    const { pageModel, historyPast, selectedElementId, nextRegionId } = get();
+    if (!pageModel) {
+      return null;
+    }
+
+    const element = createManualTextElement({
+      id: nextRegionId,
+      text: '',
+      bbox: cloneBounds(bounds),
+      sourceBounds: cloneBounds(bounds),
+      fontSize: Math.max(16, Math.round(bounds.height * 0.65)),
+    });
+    const nextPageModel = applyMutations(pageModel, [{ type: 'add-region', element }]);
+    const nextRevision = get().autoAiRevision + 1;
+
+    set({
+      pageModel: {
+        ...nextPageModel,
+        cleanLayer: null,
+      },
+      selectedElementId: element.id,
+      editorMode: 'select',
+      pendingRoiAction: null,
+      previewMode: 'current',
+      historyPast: [
+        ...historyPast,
+        {
+          undo: [{ type: 'remove-region', regionId: element.id }],
+          redo: [{ type: 'restore-region', regionId: element.id }],
+          selectedElementId,
+          nextSelectedElementId: element.id,
+        },
+      ],
+      historyFuture: [],
+      nextRegionId: element.id + 1,
+      autoAiRevision: nextRevision,
+    });
+
+    return element.id;
+  },
+
+  mergeRoiDetections: (roiBounds: BoundingBox, detections: OCRDetection[]) => {
+    const { pageModel, historyPast, nextRegionId, selectedElementId } = get();
+    if (!pageModel) {
+      return;
+    }
+
+    const overlappingRegionIds = pageModel.regions
+      .filter((region) => !region.removed && region.source !== 'manual' && intersectsBoundingBox(region.sourceBounds, roiBounds))
+      .map((region) => region.id);
+    const nextRegions = detections.map((detection, index) => {
+      const shifted = shiftDetectionToPage(detection, roiBounds.x, roiBounds.y, nextRegionId + index);
+      return {
+        ...createTextElement(shifted),
+        source: 'roi_ocr' as const,
+        confirmed: true,
+        excludedFromClean: false,
+        lowConfidence: false,
+      };
+    });
+
+    if (overlappingRegionIds.length === 0 && nextRegions.length === 0) {
+      return;
+    }
+
+    const initialMutations: PageMutation[] = [
+      ...overlappingRegionIds.map((regionId) => ({ type: 'remove-region', regionId }) as const),
+      ...nextRegions.map((element) => ({ type: 'add-region', element }) as const),
+    ];
+    const undo: PageMutation[] = [
+      ...overlappingRegionIds.map((regionId) => ({ type: 'restore-region', regionId }) as const),
+      ...nextRegions.map((element) => ({ type: 'remove-region', regionId: element.id }) as const),
+    ];
+    const redo: PageMutation[] = [
+      ...overlappingRegionIds.map((regionId) => ({ type: 'remove-region', regionId }) as const),
+      ...nextRegions.map((element) => ({ type: 'restore-region', regionId: element.id }) as const),
+    ];
+    const nextPageModel = applyMutations(pageModel, initialMutations);
+    const nextActiveRegions = getActiveRegions(nextPageModel.regions);
+    const nextSelectedElementId = nextRegions[0]?.id ?? nextActiveRegions[0]?.id ?? null;
+    const nextRevision = get().autoAiRevision + 1;
+
+    set({
+      pageModel: {
+        ...nextPageModel,
+        cleanLayer: null,
+      },
+      selectedElementId: nextSelectedElementId,
+      editorMode: 'select',
+      pendingRoiAction: null,
+      previewMode: 'current',
+      historyPast: [
+        ...historyPast,
+        {
+          undo,
+          redo,
+          selectedElementId,
+          nextSelectedElementId,
+        },
+      ],
+      historyFuture: [],
+      nextRegionId: deriveNextRegionId(nextPageModel.regions),
       autoAiRevision: nextRevision,
     });
   },
@@ -573,7 +715,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   setSelectedElement: (id: number | null) => set({ selectedElementId: id }),
   setIsDetecting: (isDetecting: boolean) => set({ isDetecting }),
-  setEditorMode: (mode: EditorMode) => set({ editorMode: mode }),
+  setEditorMode: (mode: EditorMode) => set((state) => ({
+    editorMode: mode,
+    pendingRoiAction: mode === 'roi' ? state.pendingRoiAction : null,
+  })),
+  setPendingRoiAction: (action: RoiAction | null) => set({ pendingRoiAction: action }),
   setPreviewMode: (mode: PreviewMode) => set({ previewMode: normalizePreviewMode(mode) }),
   setEraserSize: (size: number) => set({ eraserSize: size }),
   setIsComparing: (isComparing: boolean) => set({ isComparing }),
@@ -672,6 +818,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       viewportPan: { x: 0, y: 0 },
       selectedElementId: null,
       editorMode: 'select',
+      pendingRoiAction: null,
       previewMode: 'current',
       eraserSize: 20,
       isComparing: false,
