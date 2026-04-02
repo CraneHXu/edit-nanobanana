@@ -1,11 +1,15 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { clampBounds } from '@/components/editor/CanvasEditor';
 import { buildRestoreOriginalPatch, composeCurrentLayer, resolvePreviewBackground } from '@/lib/editor-layer';
 import { getRoiOverlapRegionIds, useEditorStore } from '@/store/editorStore';
 import type { AutoChange, ImagePatch, PageModel, TextElement } from '@/types/canvas';
 import type { OCRDetection } from '@/types/ocr';
+
+vi.mock('@/lib/text-layout', () => ({
+  estimateFontSizeToBox: () => 12,
+}));
 
 const bounds = { x: 0, y: 0, width: 10, height: 4 };
 

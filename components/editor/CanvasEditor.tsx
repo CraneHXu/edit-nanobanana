@@ -397,7 +397,7 @@ export function CanvasEditor() {
     state.setIsCleaningBackground(true);
     try {
       const createdAt = Date.now();
-      const baseLayer = state.pageModel.cleanLayer ?? state.currentLayer ?? state.baseAutoLayer ?? state.originalImage;
+      const baseLayer = state.currentLayer ?? state.pageModel.cleanLayer ?? state.baseAutoLayer ?? state.originalImage;
 
       if (state.pendingRoiAction === 'local-repair') {
         const cleanLayer = await generateCleanBackground(state.originalImage, state.pageModel);
