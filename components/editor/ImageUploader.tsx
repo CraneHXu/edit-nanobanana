@@ -4,7 +4,7 @@ import React, { useCallback } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { Upload } from 'lucide-react';
 import { useEditorStore } from '@/store/editorStore';
-import { detectText, inpaintRegion } from '@/lib/api-client';
+import { detectText, inpaintRegion, mergePatchIntoImage } from '@/lib/api-client';
 import { buildAutoRepairCandidates, shouldDropAsyncResult, shouldUseAutoAi } from '@/lib/auto-repair';
 import { enhanceDetectionsWithStyles } from '@/lib/color-sampler';
 import { estimateRegionComplexity, generateCleanBackground } from '@/lib/clean-background';
@@ -93,6 +93,10 @@ export function ImageUploader() {
           source: 'original',
           sourceBounds: candidate.sourceBounds,
           sourcePolygon: candidate.sourcePolygon,
+          pageSize: {
+            width: stateBeforeComplexity.pageModel?.originalWidth ?? initialPageModel.originalWidth,
+            height: stateBeforeComplexity.pageModel?.originalHeight ?? initialPageModel.originalHeight,
+          },
         });
         if (response.success === false) {
           throw new Error('Inpaint API returned an unsuccessful result');
@@ -108,13 +112,36 @@ export function ImageUploader() {
           continue;
         }
 
-        const createdAt = Date.now();
-        const patchId = response.patchId ?? `auto-ai-${candidate.regionId}-${createdAt}`;
-        const { patch, autoChange } = buildAutoAiEntry(candidate.regionId, patchId, createdAt);
-        applyAutoPatch(patch, autoChange);
-      } catch (error) {
-        console.error(`Failed to auto repair region ${candidate.regionId}:`, error);
-      }
+          const patchImage = response.patch ?? response.imageDataUrl;
+          const patchCrop = response.crop ?? candidate.sourceBounds;
+          if (!patchImage) {
+            throw new Error('Inpaint API returned no patch image');
+          }
+
+          const baseLayerForApply = latestState.currentLayer ?? latestState.baseAutoLayer ?? imageUrl;
+          const nextCurrentLayer = await mergePatchIntoImage(
+            baseLayerForApply,
+            patchImage,
+            patchCrop,
+            {
+              width: latestState.pageModel?.originalWidth ?? initialPageModel.originalWidth,
+              height: latestState.pageModel?.originalHeight ?? initialPageModel.originalHeight,
+            },
+          );
+
+          const stateBeforeApply = useEditorStore.getState();
+          if (shouldDropAsyncResult(submittedRevision, stateBeforeApply.autoAiRevision)) {
+            continue;
+          }
+
+          const createdAt = Date.now();
+          const patchId = response.patchId ?? `auto-ai-${candidate.regionId}-${createdAt}`;
+          const { patch, autoChange } = buildAutoAiEntry(candidate.regionId, patchId, createdAt);
+          applyAutoPatch(patch, autoChange);
+          useEditorStore.getState().setCurrentLayer(nextCurrentLayer);
+        } catch (error) {
+          console.error(`Failed to auto repair region ${candidate.regionId}:`, error);
+        }
     }
   }, [applyAutoPatch]);
 

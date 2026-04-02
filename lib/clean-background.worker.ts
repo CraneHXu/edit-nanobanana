@@ -20,6 +20,12 @@ interface CleanBackgroundWorkerRequest {
   regions: CleanRegionPayload[];
 }
 
+interface AnalyzeRegionComplexityWorkerRequest {
+  type: 'analyze-region-complexity';
+  imageDataUrl: string;
+  region: Pick<CleanRegionPayload, 'sourceBounds' | 'sourcePolygon'>;
+}
+
 const MIN_PADDING = 8;
 const MAX_PADDING = 40;
 const PADDING_RATIO = 0.25;
@@ -77,7 +83,7 @@ async function decodeImageBitmap(imageDataUrl: string): Promise<ImageBitmap> {
 function createMaskCanvas(
   cropWidth: number,
   cropHeight: number,
-  region: CleanRegionPayload,
+  region: Pick<CleanRegionPayload, 'sourceBounds' | 'sourcePolygon'>,
   cropX: number,
   cropY: number,
 ): OffscreenCanvas {
@@ -250,28 +256,116 @@ async function generateCleanLayer(
   return canvas.convertToBlob({ type: 'image/png' });
 }
 
-self.onmessage = async (event: MessageEvent<CleanBackgroundWorkerRequest>) => {
-  const payload = event.data;
-  if (payload.type !== 'generate-clean-layer') {
-    return;
+function measurePixelVariance(
+  cropPixels: Uint8ClampedArray,
+  maskPixels: Uint8ClampedArray,
+): number {
+  let count = 0;
+  let sumR = 0;
+  let sumG = 0;
+  let sumB = 0;
+
+  for (let offset = 0; offset < cropPixels.length; offset += 4) {
+    if (maskPixels[offset + 3] > 8) {
+      continue;
+    }
+
+    sumR += cropPixels[offset];
+    sumG += cropPixels[offset + 1];
+    sumB += cropPixels[offset + 2];
+    count += 1;
   }
 
-  try {
-    const blob = await generateCleanLayer(
-      payload.imageDataUrl,
-      payload.imageWidth,
-      payload.imageHeight,
-      payload.regions,
-    );
+  if (count < 16) {
+    return 1;
+  }
 
-    self.postMessage({
-      type: 'success',
-      blob,
-    });
+  const meanR = sumR / count;
+  const meanG = sumG / count;
+  const meanB = sumB / count;
+
+  let totalDistance = 0;
+  for (let offset = 0; offset < cropPixels.length; offset += 4) {
+    if (maskPixels[offset + 3] > 8) {
+      continue;
+    }
+
+    totalDistance += Math.abs(cropPixels[offset] - meanR);
+    totalDistance += Math.abs(cropPixels[offset + 1] - meanG);
+    totalDistance += Math.abs(cropPixels[offset + 2] - meanB);
+  }
+
+  return clamp((totalDistance / count) / 96, 0, 1);
+}
+
+async function analyzeRegionComplexity(
+  imageDataUrl: string,
+  region: Pick<CleanRegionPayload, 'sourceBounds' | 'sourcePolygon'>,
+): Promise<number> {
+  if (typeof OffscreenCanvas === 'undefined') {
+    throw new Error('Current browser does not support OffscreenCanvas');
+  }
+
+  const bitmap = await decodeImageBitmap(imageDataUrl);
+  const crop = expandBounds(region.sourceBounds, bitmap.width, bitmap.height);
+  const canvas = new OffscreenCanvas(crop.width, crop.height);
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  if (!context) {
+    throw new Error('Failed to create complexity canvas context');
+  }
+
+  context.drawImage(
+    bitmap,
+    crop.x,
+    crop.y,
+    crop.width,
+    crop.height,
+    0,
+    0,
+    crop.width,
+    crop.height,
+  );
+
+  const cropImage = context.getImageData(0, 0, crop.width, crop.height);
+  const maskCanvas = createMaskCanvas(crop.width, crop.height, region, crop.x, crop.y);
+  const maskContext = maskCanvas.getContext('2d', { willReadFrequently: true });
+  if (!maskContext) {
+    throw new Error('Failed to read complexity mask data');
+  }
+
+  const maskImage = maskContext.getImageData(0, 0, crop.width, crop.height);
+  return measurePixelVariance(cropImage.data, maskImage.data);
+}
+
+self.onmessage = async (event: MessageEvent<CleanBackgroundWorkerRequest | AnalyzeRegionComplexityWorkerRequest>) => {
+  const payload = event.data;
+  try {
+    if (payload.type === 'generate-clean-layer') {
+      const blob = await generateCleanLayer(
+        payload.imageDataUrl,
+        payload.imageWidth,
+        payload.imageHeight,
+        payload.regions,
+      );
+
+      self.postMessage({
+        type: 'success',
+        blob,
+      });
+      return;
+    }
+
+    if (payload.type === 'analyze-region-complexity') {
+      const complexity = await analyzeRegionComplexity(payload.imageDataUrl, payload.region);
+      self.postMessage({
+        type: 'complexity-success',
+        complexity,
+      });
+    }
   } catch (error) {
     self.postMessage({
       type: 'error',
-      message: error instanceof Error ? error.message : 'Failed to generate clean background',
+      message: error instanceof Error ? error.message : 'Failed to process clean background worker request',
     });
   }
 };

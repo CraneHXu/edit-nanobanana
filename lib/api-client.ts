@@ -18,6 +18,11 @@ interface ScaleResult {
   scale: number; // 1 means no scaling, >1 means upscaled, <1 means downscaled
 }
 
+interface PageSize {
+  width: number;
+  height: number;
+}
+
 async function scaleImageForOCR(file: File, targetHeight: number): Promise<ScaleResult> {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -85,12 +90,159 @@ export interface InpaintRequest {
   source: 'original';
   sourceBounds: BoundingBox;
   sourcePolygon?: [number, number][];
+  pageSize: PageSize;
 }
 
 export interface InpaintResponse {
   success?: boolean;
   patchId?: string;
   imageDataUrl?: string;
+  patch?: string;
+  crop?: BoundingBox;
+  provider?: string;
+  latencyMs?: number;
+}
+
+function clampBounds(bounds: BoundingBox, pageSize: PageSize): BoundingBox {
+  const x = Math.max(0, Math.min(pageSize.width, bounds.x));
+  const y = Math.max(0, Math.min(pageSize.height, bounds.y));
+  const right = Math.max(x, Math.min(pageSize.width, bounds.x + bounds.width));
+  const bottom = Math.max(y, Math.min(pageSize.height, bounds.y + bounds.height));
+
+  return {
+    x,
+    y,
+    width: Math.max(1, right - x),
+    height: Math.max(1, bottom - y),
+  };
+}
+
+async function loadImageElement(imageDataUrl: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Failed to load image'));
+    image.src = imageDataUrl;
+  });
+}
+
+async function canvasToDataUrl(canvas: HTMLCanvasElement): Promise<string> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        reject(new Error('Failed to serialize canvas'));
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(reader.error ?? new Error('Failed to read blob'));
+      reader.readAsDataURL(blob);
+    }, 'image/png');
+  });
+}
+
+export async function mergePatchIntoImage(
+  baseImageDataUrl: string,
+  patchDataUrl: string,
+  crop: BoundingBox,
+  pageSize: PageSize,
+): Promise<string> {
+  const [baseImage, patchImage] = await Promise.all([
+    loadImageElement(baseImageDataUrl),
+    loadImageElement(patchDataUrl),
+  ]);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = pageSize.width;
+  canvas.height = pageSize.height;
+
+  const context = canvas.getContext('2d');
+  if (!context) {
+    throw new Error('Failed to create merge canvas context');
+  }
+
+  context.drawImage(baseImage, 0, 0, pageSize.width, pageSize.height);
+  context.drawImage(
+    patchImage,
+    0,
+    0,
+    patchImage.width,
+    patchImage.height,
+    crop.x,
+    crop.y,
+    crop.width,
+    crop.height,
+  );
+
+  return canvasToDataUrl(canvas);
+}
+
+async function cropImageDataUrl(imageDataUrl: string, crop: BoundingBox): Promise<string> {
+  const image = await loadImageElement(imageDataUrl);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(crop.width));
+  canvas.height = Math.max(1, Math.round(crop.height));
+
+  const context = canvas.getContext('2d');
+  if (!context) {
+    throw new Error('Failed to create crop canvas context');
+  }
+
+  context.drawImage(
+    image,
+    crop.x,
+    crop.y,
+    crop.width,
+    crop.height,
+    0,
+    0,
+    crop.width,
+    crop.height,
+  );
+
+  return canvasToDataUrl(canvas);
+}
+
+async function buildMaskDataUrlForCrop(
+  crop: BoundingBox,
+  region: Pick<InpaintRequest, 'sourceBounds' | 'sourcePolygon'>,
+): Promise<string> {
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(crop.width));
+  canvas.height = Math.max(1, Math.round(crop.height));
+
+  const context = canvas.getContext('2d');
+  if (!context) {
+    throw new Error('Failed to create mask canvas context');
+  }
+
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.fillStyle = 'rgba(255,255,255,1)';
+
+  if (region.sourcePolygon && region.sourcePolygon.length >= 3) {
+    context.beginPath();
+    region.sourcePolygon.forEach(([x, y], index) => {
+      const localX = x - crop.x;
+      const localY = y - crop.y;
+      if (index === 0) {
+        context.moveTo(localX, localY);
+      } else {
+        context.lineTo(localX, localY);
+      }
+    });
+    context.closePath();
+    context.fill();
+  } else {
+    context.fillRect(
+      region.sourceBounds.x - crop.x,
+      region.sourceBounds.y - crop.y,
+      region.sourceBounds.width,
+      region.sourceBounds.height,
+    );
+  }
+
+  return canvasToDataUrl(canvas);
 }
 
 export async function detectText(
@@ -221,17 +373,37 @@ export async function healthCheck(): Promise<{ status: string }> {
 }
 
 export async function inpaintRegion(request: InpaintRequest): Promise<InpaintResponse> {
+  const crop = clampBounds(request.sourceBounds, request.pageSize);
+  const [image, mask] = await Promise.all([
+    cropImageDataUrl(request.imageDataUrl, crop),
+    buildMaskDataUrlForCrop(crop, request),
+  ]);
+
   const response = await fetch(`${API_BASE_URL}/api/inpaint`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify(request),
+    body: JSON.stringify({
+      image,
+      mask,
+      crop,
+      pageSize: request.pageSize,
+      source: request.source,
+      reason: 'complex_background',
+    }),
   });
 
+  const payload = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new Error(`Inpaint failed: ${response.status} ${response.statusText}`);
+    throw new Error(payload?.error || `Inpaint failed: ${response.status}`);
+  }
+  if (!payload || typeof payload !== 'object') {
+    throw new Error(`Inpaint returned an invalid response payload (${response.status})`);
+  }
+  if (typeof (payload as InpaintResponse).patch !== 'string' || !(payload as InpaintResponse).crop) {
+    throw new Error('Inpaint response is missing required patch data');
   }
 
-  return response.json();
+  return payload as InpaintResponse;
 }
