@@ -1,19 +1,23 @@
 [English Version](#English)
 
-一个基于 Web 的图片文字编辑器，使用 OCR 技术自动检测图片中的文字，并允许你直接在图片上编辑和替换文字。
+一个基于 Web 的图片文字编辑器。上传图片后会直接进入编辑页，自动执行 OCR、fast local clean，并对复杂区域渐进补充 AI 修复，让你直接在最终图层上编辑和导出。
 
 在线demo：https://image-editor-web-tan.vercel.app/
 
 ## 功能特点
 
-- **OCR 文字检测**：使用 PaddleOCR 自动检测上传图片中的文字
+- **上传即编辑**：上传完成后直接进入编辑页，无需额外确认步骤
+- **OCR + fast local clean**：使用 PaddleOCR 自动检测文字，并立即生成首版干净底图
+- **渐进自动 AI 修复**：复杂区域会继续排队执行自动 AI 修复，结果可查看和回退
 - **文字编辑**：编辑检测到的文字内容，更改字体、调整字号和颜色
 - **背景遮盖**：自动生成背景遮盖层隐藏原始文字
 - **橡皮擦工具**：精确擦除部分背景遮盖，露出原始图片
+- **ROI 局部纠错**：通过 ROI OCR、Local repair、AI repair 处理局部问题区域
+- **误识别删除恢复原图**：删除误识别框时会恢复该区域对应的原图影响
 - **对比模式**：按住对比按钮查看原图
 - **多语言支持**：中英文界面切换
 - **丰富字体库**：支持 Google Fonts，包括中日韩（CJK）字体
-- **导出功能**：以原始分辨率导出编辑后的 PNG 图片
+- **导出功能**：以当前最终图层为准，按原始分辨率导出 PNG 图片
 
 ## 技术栈
 
@@ -27,13 +31,13 @@
 
 ### 基本流程
 
-1. **上传图片**：拖放或点击上传图片（支持 PNG、JPG、JPEG、WEBP，最大 10MB）
-2. **等待 OCR**：系统会自动检测图片中的文字
-3. **编辑文字**：点击检测到的文字进行选择和编辑
-4. **调整样式**：使用侧边栏控件更改字体、大小、颜色
-5. **使用橡皮擦**：切换到橡皮擦模式，在遮盖层上涂抹以露出原始背景
-6. **对比原图**：按住"对比"按钮查看原始图片
-7. **导出图片**：点击"导出 PNG"下载编辑后的图片
+1. **上传图片**：拖放或点击上传图片（支持 PNG、JPG、JPEG、WEBP，最大 10MB），上传后直接进入编辑页
+2. **自动首轮处理**：系统会自动完成 OCR 和 fast local clean，先生成可编辑的干净底图
+3. **渐进自动修复**：复杂背景区域会继续渐进执行自动 AI 修复，自动变更会出现在 Auto changes 面板中，可随时回退
+4. **编辑文字**：点击检测到的文字进行选择和编辑，调整字体、大小、颜色
+5. **局部纠错**：通过 ROI 框选进入 ROI OCR、Local repair、AI repair，处理局部漏检、脏边或复杂区域
+6. **清理误识别**：删除误识别框时，会同时恢复该区域对应的原图影响，而不是留下错误遮盖
+7. **导出图片**：点击"导出 PNG"时，会以当前最终图层为准导出，包括仍然生效的自动/手动修复结果
 
 ### 工具说明
 
@@ -41,6 +45,8 @@
 |------|------|
 | 选择模式 | 点击选择文字元素进行编辑 |
 | 橡皮擦模式 | 在背景遮盖上涂抹以露出原始图片 |
+| ROI OCR / Local repair / AI repair | ROI 是局部纠错入口，可局部重做 OCR 或应用局部修复 |
+| Auto changes | 查看渐进自动 AI 修复结果，并按条目回退 |
 | 对比 | 按住查看原图 |
 | 恢复全部 | 将所有元素重置为原始状态 |
 | 重新开始 | 清除所有内容，重新开始 |
@@ -134,19 +140,23 @@ MIT License
 
 # Image Text Editor
 
-A web-based image text editor that allows you to detect, edit, and replace text directly on images using OCR technology.
+A web-based image text editor. After upload, it jumps straight into the editor, runs OCR plus fast local clean automatically, and progressively applies AI repair on complex areas so you can edit and export against the final composed layer.
 
 
 ## Features
 
-- **OCR Text Detection**: Automatically detect text in uploaded images using PaddleOCR
+- **Upload Straight to Editing**: Enter the editor immediately after upload with no extra confirmation step
+- **OCR + Fast Local Clean**: Automatically detect text with PaddleOCR and generate the first clean base layer right away
+- **Progressive Auto AI Repair**: Queue complex regions for automatic AI repair, with visible changes that can be reverted
 - **Text Editing**: Edit detected text content, change fonts, adjust font size and colors
 - **Background Cover**: Automatically generate background covers to hide original text
 - **Eraser Tool**: Precisely erase parts of the background cover to reveal the original image
+- **ROI Local Correction**: Use ROI OCR, Local repair, and AI repair as targeted correction entry points
+- **Delete Misdetected Boxes Safely**: Removing a false-positive box restores the original image influence for that area
 - **Compare Mode**: Hold to compare with the original image
 - **Multi-language Support**: English and Chinese interface (i18n)
 - **Rich Font Library**: Support for Google Fonts including CJK (Chinese, Japanese, Korean) fonts
-- **Export**: Export edited images as PNG at original resolution
+- **Export**: Export PNG from the current final layer at the original resolution
 
 ## Tech Stack
 
@@ -209,13 +219,13 @@ npm start
 
 ### Basic Workflow
 
-1. **Upload Image**: Drag and drop or click to upload an image (PNG, JPG, JPEG, WEBP, max 10MB)
-2. **Wait for OCR**: The system will automatically detect text in the image
-3. **Edit Text**: Click on detected text to select and edit
-4. **Adjust Styling**: Change font, size, color using the sidebar controls
-5. **Use Eraser**: Switch to eraser mode to reveal original background through the cover
-6. **Compare**: Hold the "Compare" button to see the original image
-7. **Export**: Click "Export PNG" to download the edited image
+1. **Upload Image**: Drag and drop or click to upload an image (PNG, JPG, JPEG, WEBP, max 10MB), then go straight into the editor
+2. **Automatic First Pass**: OCR and fast local clean run automatically to build the initial clean base layer
+3. **Progressive Auto Repair**: Complex regions continue through automatic AI repair in the background, and each result shows up in the Auto changes panel for review or revert
+4. **Edit Text**: Click detected text to select it and adjust font, size, and color
+5. **Use ROI for Local Fixes**: ROI is the entry point for ROI OCR, Local repair, and AI repair when a small area needs correction
+6. **Remove False Positives**: Deleting a misdetected box restores the original image contribution for that area instead of leaving the wrong cleanup behind
+7. **Export**: "Export PNG" uses the current final layer, including any still-applied automatic or manual patches
 
 ### Tools
 
@@ -223,6 +233,8 @@ npm start
 |------|-------------|
 | Select Mode | Click to select text elements for editing |
 | Eraser Mode | Paint on background covers to reveal original image |
+| ROI OCR / Local repair / AI repair | ROI is the local correction entry point for re-running OCR or applying targeted repair |
+| Auto changes | Review progressive automatic AI repairs and revert individual entries |
 | Compare | Hold to view original image |
 | Restore All | Reset all elements to original state |
 | Start Over | Clear everything and start fresh |
