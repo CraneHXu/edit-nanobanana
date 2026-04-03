@@ -118,6 +118,8 @@ function createAutoChange(patch: ImagePatch): AutoChange {
     reverted: patch.reverted,
     previewMode: patch.previewMode,
     description: patch.description,
+    patch,
+    status: 'new',
   };
 }
 
@@ -168,6 +170,32 @@ describe('editor store history actions', () => {
     vi.mocked(generateCleanBackground).mockClear();
   });
 
+  it('initializeFromDetections assigns source=ocr for initial regions', () => {
+    const detection: OCRDetection = {
+      index: 1,
+      text: 'INIT',
+      confidence: 0.99,
+      bbox: [
+        [0, 0],
+        [10, 0],
+        [10, 5],
+        [0, 5],
+      ],
+      bounds: { x: 0, y: 0, width: 10, height: 5 },
+      textColor: { r: 0, g: 0, b: 0 },
+      bgColor: { r: 255, g: 255, b: 255 },
+    };
+
+    useEditorStore.setState({
+      imageMeta: { width: 100, height: 100 },
+      imageFile: null,
+    });
+
+    useEditorStore.getState().initializeFromDetections([detection]);
+
+    expect(useEditorStore.getState().pageModel?.regions[0]?.source).toBe('ocr');
+  });
+
   it('applyPatch supports undo/redo with async actions', async () => {
     const pageModel = createPageModel();
     useEditorStore.setState({
@@ -183,7 +211,7 @@ describe('editor store history actions', () => {
     useEditorStore.getState().applyPatch(patch, 'clean-1');
 
     expect(useEditorStore.getState().pageModel?.patches?.[0]?.id).toBe('history-1');
-    expect(useEditorStore.getState().pageModel?.cleanLayer).toBe('clean-1');
+    expect(useEditorStore.getState().pageModel?.cleanLayer).toBe('clean-0');
     expect(useEditorStore.getState().baseAutoLayer).toBe('clean-1');
     expect(useEditorStore.getState().currentLayer).toBe('clean-1');
     expect(useEditorStore.getState().historyPast).toHaveLength(1);
@@ -211,12 +239,12 @@ describe('editor store history actions', () => {
       .pageModel?.patches?.find((item) => item.id === 'history-1');
     expect(patchAfterRedo?.applied).toBe(true);
     expect(patchAfterRedo?.reverted).toBe(false);
-    expect(useEditorStore.getState().pageModel?.cleanLayer).toBe('clean-1');
+    expect(useEditorStore.getState().pageModel?.cleanLayer).toBe('clean-0');
     expect(useEditorStore.getState().baseAutoLayer).toBe('clean-1');
     expect(useEditorStore.getState().currentLayer).toBe('clean-1');
   });
 
-  it('applyAutoPatch stores auto changes and replays current layer history', async () => {
+  it('applyAutoPatch stores pending auto preview without mutating confirmed patches', async () => {
     const pageModel = createPageModel();
     useEditorStore.setState({
       pageModel,
@@ -226,24 +254,122 @@ describe('editor store history actions', () => {
       historyFuture: [],
     });
 
-    const patch = createPatch({ id: 'auto-1', createdAt: 22 });
+    const patch = createPatch({
+      id: 'auto-1',
+      kind: 'auto_ai',
+      createdAt: 22,
+      imageDataUrl: 'patch-1',
+      crop: { x: 1, y: 2, width: 3, height: 4 },
+    });
     const autoChange = createAutoChange(patch);
 
-    useEditorStore.getState().applyAutoPatch(patch, autoChange, 'current-1');
+    useEditorStore.getState().applyAutoPatch(patch, autoChange, 'clean-0>patch-1');
 
     const stored = useEditorStore.getState().pageModel?.autoChanges?.[0];
     expect(stored?.id).toBe(autoChange.id);
+    expect(stored?.patch).toMatchObject({ id: 'auto-1' });
+    expect(useEditorStore.getState().pageModel?.patches ?? []).toHaveLength(0);
     expect(useEditorStore.getState().pageModel?.cleanLayer).toBe('clean-0');
     expect(useEditorStore.getState().baseAutoLayer).toBe('clean-0');
-    expect(useEditorStore.getState().currentLayer).toBe('current-1');
+    expect(useEditorStore.getState().currentLayer).toBe('clean-0>patch-1');
+  });
 
-    await useEditorStore.getState().undo();
-    expect(useEditorStore.getState().pageModel?.cleanLayer).toBe('clean-0');
+  it('confirmAutoChange promotes a pending preview into the confirmed base layer', async () => {
+    const pageModel = createPageModel();
+    useEditorStore.setState({
+      pageModel,
+      baseAutoLayer: 'clean-0',
+      currentLayer: 'clean-0',
+      historyPast: [],
+      historyFuture: [],
+    });
+
+    const patch = createPatch({
+      id: 'auto-1',
+      kind: 'auto_ai',
+      createdAt: 22,
+      imageDataUrl: 'patch-1',
+      crop: { x: 1, y: 2, width: 3, height: 4 },
+    });
+    const autoChange = createAutoChange(patch);
+
+    useEditorStore.getState().applyAutoPatch(patch, autoChange, 'clean-0>patch-1');
+    await useEditorStore.getState().confirmAutoChange(autoChange.id);
+
+    expect(useEditorStore.getState().pageModel?.autoChanges ?? []).toHaveLength(0);
+    expect(useEditorStore.getState().pageModel?.patches?.map((item) => item.id)).toEqual(['auto-1']);
+    expect(useEditorStore.getState().baseAutoLayer).toBe('clean-0>patch-1');
+    expect(useEditorStore.getState().currentLayer).toBe('clean-0>patch-1');
+    expect(vi.mocked(mergePatchIntoImage)).toHaveBeenCalledWith(
+      'clean-0',
+      'patch-1',
+      { x: 1, y: 2, width: 3, height: 4 },
+      { width: 100, height: 100 },
+    );
+  });
+
+  it('discardAutoChange removes the pending preview and restores the confirmed base layer', async () => {
+    const pageModel = createPageModel();
+    useEditorStore.setState({
+      pageModel,
+      baseAutoLayer: 'clean-0',
+      currentLayer: 'clean-0',
+      historyPast: [],
+      historyFuture: [],
+    });
+
+    const patch = createPatch({
+      id: 'auto-1',
+      kind: 'auto_ai',
+      createdAt: 22,
+      imageDataUrl: 'patch-1',
+      crop: { x: 1, y: 2, width: 3, height: 4 },
+    });
+    const autoChange = createAutoChange(patch);
+
+    useEditorStore.getState().applyAutoPatch(patch, autoChange, 'clean-0>patch-1');
+    await useEditorStore.getState().discardAutoChange(autoChange.id);
+
+    expect(useEditorStore.getState().pageModel?.autoChanges ?? []).toHaveLength(0);
+    expect(useEditorStore.getState().pageModel?.patches ?? []).toHaveLength(0);
     expect(useEditorStore.getState().baseAutoLayer).toBe('clean-0');
     expect(useEditorStore.getState().currentLayer).toBe('clean-0');
+  });
 
-    await useEditorStore.getState().redo();
-    expect(useEditorStore.getState().currentLayer).toBe('current-1');
+  it('confirmAllAutoChanges promotes every pending preview into the confirmed base layer', async () => {
+    const pageModel = createPageModel();
+    const firstPatch = createPatch({
+      id: 'auto-1',
+      kind: 'auto_ai',
+      createdAt: 10,
+      imageDataUrl: 'patch-1',
+      crop: { x: 1, y: 2, width: 3, height: 4 },
+    });
+    const secondPatch = createPatch({
+      id: 'auto-2',
+      kind: 'auto_ai',
+      regionIds: [2],
+      createdAt: 20,
+      imageDataUrl: 'patch-2',
+      crop: { x: 5, y: 6, width: 7, height: 8 },
+    });
+
+    useEditorStore.setState({
+      pageModel,
+      baseAutoLayer: 'clean-0',
+      currentLayer: 'clean-0>patch-1>patch-2',
+      historyPast: [],
+      historyFuture: [],
+    });
+
+    useEditorStore.getState().applyAutoPatch(firstPatch, createAutoChange(firstPatch), 'clean-0>patch-1');
+    useEditorStore.getState().applyAutoPatch(secondPatch, createAutoChange(secondPatch), 'clean-0>patch-1>patch-2');
+    await useEditorStore.getState().confirmAllAutoChanges();
+
+    expect(useEditorStore.getState().pageModel?.autoChanges ?? []).toHaveLength(0);
+    expect((useEditorStore.getState().pageModel?.patches ?? []).map((item) => item.id)).toEqual(['auto-1', 'auto-2']);
+    expect(useEditorStore.getState().baseAutoLayer).toBe('clean-0>patch-1>patch-2');
+    expect(useEditorStore.getState().currentLayer).toBe('clean-0>patch-1>patch-2');
   });
 
   it('manual patch application invalidates existing auto changes', () => {
@@ -276,7 +402,7 @@ describe('editor store history actions', () => {
     expect(useEditorStore.getState().currentLayer).toBe('manual-layer');
   });
 
-  it('addManualElement invalidates existing auto changes', () => {
+  it('addManualElement preserves existing background layers and pending auto changes', () => {
     const autoPatch = createPatch({
       id: 'auto-1',
       kind: 'auto_ai',
@@ -295,6 +421,7 @@ describe('editor store history actions', () => {
       pageModel,
       baseAutoLayer: 'auto-base',
       currentLayer: 'auto-current',
+      previewMode: 'current',
       historyPast: [],
       historyFuture: [],
       nextRegionId: 9,
@@ -302,8 +429,11 @@ describe('editor store history actions', () => {
 
     useEditorStore.getState().addManualElement({ x: 10, y: 12, width: 80, height: 24 });
 
-    expect(useEditorStore.getState().pageModel?.autoChanges ?? []).toHaveLength(0);
-    expect((useEditorStore.getState().pageModel?.patches ?? []).filter((patch) => patch.kind === 'auto_ai')).toHaveLength(0);
+    expect(useEditorStore.getState().pageModel?.autoChanges ?? []).toHaveLength(1);
+    expect((useEditorStore.getState().pageModel?.patches ?? []).filter((patch) => patch.kind === 'auto_ai')).toHaveLength(1);
+    expect(useEditorStore.getState().baseAutoLayer).toBe('auto-base');
+    expect(useEditorStore.getState().currentLayer).toBe('auto-current');
+    expect(useEditorStore.getState().pageModel?.cleanLayer).toBe('clean-0');
   });
 
   it('undo after manual patch does not resurrect invalidated auto layers', async () => {
@@ -332,11 +462,11 @@ describe('editor store history actions', () => {
     useEditorStore.getState().applyPatch(createPatch({ id: 'manual-1', kind: 'manual_ai', createdAt: 20 }), 'manual-layer');
     await useEditorStore.getState().undo();
 
-    expect(useEditorStore.getState().currentLayer).toBe('auto-base');
-    expect(useEditorStore.getState().pageModel?.autoChanges ?? []).toHaveLength(0);
+    expect(useEditorStore.getState().currentLayer).toBe('auto-current');
+    expect(useEditorStore.getState().pageModel?.autoChanges ?? []).toHaveLength(1);
   });
 
-  it('revertAutoChange recomputes current layer from baseAutoLayer and remaining auto patches', async () => {
+  it('discardAutoChange recomputes current layer from baseAutoLayer and remaining pending previews', async () => {
     const pageModel = createPageModel();
     const firstPatch = createPatch({
       id: 'auto-1',
@@ -352,31 +482,22 @@ describe('editor store history actions', () => {
       imageDataUrl: 'patch-2',
       crop: { x: 5, y: 6, width: 7, height: 8 },
     });
-    const firstChange = { ...createAutoChange(firstPatch), status: 'new' as const };
-    const secondChange = { ...createAutoChange(secondPatch), status: 'seen' as const };
+    const firstChange = createAutoChange(firstPatch);
+    const secondChange = createAutoChange(secondPatch);
 
     useEditorStore.setState({
       pageModel: {
         ...pageModel,
-        patches: [firstPatch, secondPatch],
         autoChanges: [firstChange, secondChange],
       },
       baseAutoLayer: 'clean-0',
       currentLayer: 'clean-0>patch-1>patch-2',
     });
 
-    await useEditorStore.getState().revertAutoChange(firstChange.id);
+    await useEditorStore.getState().discardAutoChange(firstChange.id);
 
     expect(useEditorStore.getState().currentLayer).toBe('clean-0>patch-2');
-    expect(useEditorStore.getState().pageModel?.patches?.find((patch) => patch.id === firstPatch.id)).toMatchObject({
-      applied: false,
-      reverted: true,
-    });
-    expect(useEditorStore.getState().pageModel?.autoChanges?.find((change) => change.id === firstChange.id)).toMatchObject({
-      applied: false,
-      reverted: true,
-      status: 'reverted',
-    });
+    expect((useEditorStore.getState().pageModel?.autoChanges ?? []).map((change) => change.id)).toEqual([secondChange.id]);
     expect(vi.mocked(mergePatchIntoImage)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(mergePatchIntoImage)).toHaveBeenCalledWith(
       'clean-0',
@@ -459,6 +580,61 @@ describe('editor store history actions', () => {
     ).toEqual(['auto-2']);
   });
 
+  it('deleteElement removes pending auto previews for removed regions so confirmAllAutoChanges will not promote them', async () => {
+    const pageModel = {
+      ...createPageModel(),
+      regions: [
+        createRegion({ id: 1 }),
+        createRegion({
+          id: 2,
+          sourceBounds: { x: 12, y: 12, width: 18, height: 10 },
+          bbox: { x: 12, y: 12, width: 18, height: 10 },
+          original: {
+            bbox: { x: 12, y: 12, width: 18, height: 10 },
+          },
+        }),
+      ],
+    };
+
+    useEditorStore.setState({
+      originalImage: 'original',
+      pageModel,
+      baseAutoLayer: 'clean-0',
+      currentLayer: 'clean-0',
+      historyPast: [],
+      historyFuture: [],
+      selectedElementId: 1,
+    });
+
+    const removedPatch = createPatch({
+      id: 'auto-1',
+      kind: 'auto_ai',
+      regionIds: [1],
+      createdAt: 10,
+      imageDataUrl: 'patch-1',
+      crop: { x: 1, y: 2, width: 3, height: 4 },
+    });
+    const remainingPatch = createPatch({
+      id: 'auto-2',
+      kind: 'auto_ai',
+      regionIds: [2],
+      createdAt: 20,
+      imageDataUrl: 'patch-2',
+      crop: { x: 5, y: 6, width: 7, height: 8 },
+    });
+
+    useEditorStore.getState().applyAutoPatch(removedPatch, createAutoChange(removedPatch), 'clean-0>patch-1');
+    useEditorStore.getState().applyAutoPatch(remainingPatch, createAutoChange(remainingPatch), 'clean-0>patch-1>patch-2');
+
+    await useEditorStore.getState().deleteElement(1);
+
+    expect((useEditorStore.getState().pageModel?.autoChanges ?? []).map((change) => change.patchId)).toEqual(['auto-2']);
+
+    await useEditorStore.getState().confirmAllAutoChanges();
+
+    expect((useEditorStore.getState().pageModel?.patches ?? []).map((patch) => patch.id)).toEqual(['auto-2']);
+  });
+
   it('getRoiOverlapRegionIds excludes manual regions from ROI overlap matching', () => {
     const regions = [
       createRegion({ id: 1, source: 'ocr', sourceBounds: { x: 10, y: 10, width: 20, height: 12 } }),
@@ -518,7 +694,7 @@ describe('editor store history actions', () => {
     expect(regions.find((region) => region.id === 3)?.source).toBe('roi_ocr');
   });
 
-  it('mergeRoiDetections rebuilds clean/base/current layers after ROI OCR replacement', async () => {
+  it('mergeRoiDetections only updates regions and invalidates the stale clean layer', async () => {
     const pageModel = createPageModel();
     const detection: OCRDetection = {
       index: 0,
@@ -548,10 +724,96 @@ describe('editor store history actions', () => {
 
     await useEditorStore.getState().mergeRoiDetections({ x: 8, y: 8, width: 30, height: 20 }, [detection]);
 
-    expect(vi.mocked(generateCleanBackground)).toHaveBeenCalledTimes(1);
-    expect(useEditorStore.getState().pageModel?.cleanLayer).toBe('clean-rebuilt');
-    expect(useEditorStore.getState().baseAutoLayer).toBe('clean-rebuilt');
-    expect(useEditorStore.getState().currentLayer).toBe('clean-rebuilt');
+    expect(vi.mocked(generateCleanBackground)).toHaveBeenCalledTimes(0);
+    expect(useEditorStore.getState().pageModel?.cleanLayer).toBeNull();
+    expect(useEditorStore.getState().baseAutoLayer).toBe('clean-0');
+    expect(useEditorStore.getState().currentLayer).toBe('clean-0');
+  });
+
+  it('mergeRoiDetections preserves unrelated pending auto previews outside the ROI', async () => {
+    const pageModel = {
+      ...createPageModel(),
+      regions: [
+        createRegion({ id: 1, sourceBounds: { x: 10, y: 10, width: 20, height: 12 }, bbox: { x: 10, y: 10, width: 20, height: 12 } }),
+        createRegion({ id: 2, sourceBounds: { x: 70, y: 70, width: 12, height: 10 }, bbox: { x: 70, y: 70, width: 12, height: 10 } }),
+      ],
+    };
+    const pendingPatch = createPatch({
+      id: 'auto-2',
+      kind: 'auto_ai',
+      regionIds: [2],
+      createdAt: 20,
+      imageDataUrl: 'patch-2',
+      crop: { x: 70, y: 70, width: 12, height: 10 },
+    });
+    const detection: OCRDetection = {
+      index: 0,
+      text: 'ROI',
+      confidence: 0.96,
+      bbox: [
+        [1, 1],
+        [11, 1],
+        [11, 7],
+        [1, 7],
+      ],
+      bounds: { x: 1, y: 1, width: 10, height: 6 },
+      textColor: { r: 0, g: 0, b: 0 },
+      bgColor: { r: 255, g: 255, b: 255 },
+    };
+
+    useEditorStore.setState({
+      originalImage: 'original',
+      pageModel: {
+        ...pageModel,
+        autoChanges: [createAutoChange(pendingPatch)],
+      },
+      baseAutoLayer: 'clean-0',
+      currentLayer: 'clean-0>patch-2',
+      nextRegionId: 3,
+      historyPast: [],
+      historyFuture: [],
+      selectedElementId: 1,
+    });
+
+    await useEditorStore.getState().mergeRoiDetections({ x: 8, y: 8, width: 30, height: 20 }, [detection]);
+
+    expect((useEditorStore.getState().pageModel?.autoChanges ?? []).map((change) => change.patchId)).toEqual(['auto-2']);
+  });
+
+  it('applyPatch keeps unrelated pending auto previews when applying a local patch', () => {
+    const pageModel = {
+      ...createPageModel(),
+      autoChanges: [
+        createAutoChange(createPatch({
+          id: 'auto-2',
+          kind: 'auto_ai',
+          regionIds: [2],
+          createdAt: 20,
+          imageDataUrl: 'patch-2',
+          crop: { x: 70, y: 70, width: 12, height: 10 },
+        })),
+      ],
+    };
+
+    useEditorStore.setState({
+      pageModel,
+      baseAutoLayer: 'clean-0',
+      currentLayer: 'clean-0>patch-2',
+      historyPast: [],
+      historyFuture: [],
+    });
+
+    useEditorStore.getState().applyPatch(createPatch({
+      id: 'local-1',
+      kind: 'local_clean',
+      regionIds: [1],
+      createdAt: 30,
+      imageDataUrl: 'local-1',
+      crop: { x: 10, y: 10, width: 20, height: 12 },
+    }), 'clean-0>local-1>patch-2');
+
+    expect((useEditorStore.getState().pageModel?.autoChanges ?? []).map((change) => change.patchId)).toEqual(['auto-2']);
+    expect(useEditorStore.getState().currentLayer).toBe('clean-0>local-1>patch-2');
   });
 });
 

@@ -8,8 +8,8 @@ import { useEditorStore, EditorMode, RoiAction } from '@/store/editorStore';
 import { exportCanvasAsPNG } from '@/lib/fabric-utils';
 import { useI18n, Locale } from '@/lib/i18n';
 import { generateCleanBackground } from '@/lib/clean-background';
+import { isAiEnabled } from '@/lib/deploy-target';
 import { AutoChangesPanel } from '@/components/editor/AutoChangesPanel';
-import type { AutoChange } from '@/types/canvas';
 import {
   Select,
   SelectContent,
@@ -29,13 +29,14 @@ export function Toolbar() {
     originalImage,
     pageModel,
     baseAutoLayer,
-    currentLayer,
     editorMode,
     pendingRoiAction,
     setEditorMode,
     setPendingRoiAction,
     previewMode,
-    revertAutoChange,
+    confirmAutoChange,
+    confirmAllAutoChanges,
+    discardAutoChange,
     setPreviewMode,
     eraserSize,
     setEraserSize,
@@ -50,8 +51,9 @@ export function Toolbar() {
     setCleanLayer,
   } = useEditorStore();
   const { t, locale, setLocale } = useI18n();
+  const aiEnabled = isAiEnabled();
   const autoChanges = pageModel?.autoChanges ?? [];
-  const unseenAutoChanges = autoChanges.filter((change) => change.status === 'new');
+  const pendingAutoChanges = autoChanges.filter((change) => change.status === 'new');
 
   useEffect(() => {
     if (!isAutoChangesOpen) {
@@ -80,7 +82,7 @@ export function Toolbar() {
     try {
       await exportCanvasAsPNG(canvas, canvasScale, {
         filename: `edited-${timestamp}.png`,
-        backgroundImageUrl: currentLayer ?? baseAutoLayer ?? originalImage,
+        backgroundImageUrl: baseAutoLayer ?? originalImage,
       });
     } catch (error) {
       alert(`${t('toolbar.exportFailed')}: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -139,31 +141,30 @@ export function Toolbar() {
     setEditorMode('roi');
   };
 
-  const handleMarkSeen = (changeId: string) => {
-    useEditorStore.setState((state) => {
-      if (!state.pageModel) {
-        return state;
-      }
-
-      return {
-        pageModel: {
-          ...state.pageModel,
-          autoChanges: state.pageModel.autoChanges?.map((change) => (
-            change.id === changeId && change.status === 'new'
-              ? { ...change, status: 'seen' }
-              : change
-          )),
-        },
-      };
-    });
+  const handleConfirmAutoChange = async (changeId: string) => {
+    try {
+      await confirmAutoChange(changeId);
+    } catch (error) {
+      console.error('Failed to confirm auto change:', error);
+      alert(`${t('toolbar.confirmAutoChange')}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
   };
 
-  const handleRevertAutoChange = async (changeId: string) => {
+  const handleConfirmAllAutoChanges = async () => {
     try {
-      await revertAutoChange(changeId);
+      await confirmAllAutoChanges();
     } catch (error) {
-      console.error('Failed to revert auto change:', error);
-      alert(`${t('toolbar.revertAutoChange')}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      console.error('Failed to confirm all auto changes:', error);
+      alert(`${t('toolbar.confirmAllAutoChanges')}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  };
+
+  const handleDiscardAutoChange = async (changeId: string) => {
+    try {
+      await discardAutoChange(changeId);
+    } catch (error) {
+      console.error('Failed to discard auto change:', error);
+      alert(`${t('toolbar.discardAutoChange')}: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   };
 
@@ -214,22 +215,6 @@ export function Toolbar() {
               >
                 ROI OCR
               </Button>
-              <Button
-                variant={editorMode === 'roi' && pendingRoiAction === 'local-repair' ? 'default' : 'ghost'}
-                size="sm"
-                onClick={() => handleRoiAction('local-repair')}
-                disabled={!pageModel}
-              >
-                Local repair
-              </Button>
-              <Button
-                variant={editorMode === 'roi' && pendingRoiAction === 'ai-repair' ? 'default' : 'ghost'}
-                size="sm"
-                onClick={() => handleRoiAction('ai-repair')}
-                disabled={!pageModel}
-              >
-                AI repair
-              </Button>
             </div>
 
             {/* Eraser Size Slider */}
@@ -268,40 +253,47 @@ export function Toolbar() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="original">{t('toolbar.previewOriginal')}</SelectItem>
-                  <SelectItem value="auto" disabled={!pageModel?.cleanLayer}>{t('toolbar.previewAuto')}</SelectItem>
+                  <SelectItem value="auto" disabled={!baseAutoLayer && !pageModel?.cleanLayer}>{t('toolbar.previewAuto')}</SelectItem>
                   <SelectItem value="current">{t('toolbar.previewCurrent')}</SelectItem>
                 </SelectContent>
               </Select>
             </div>
 
-            <div ref={autoChangesRef} className="relative">
-              <Button
-                variant={isAutoChangesOpen ? 'default' : 'outline'}
-                size="sm"
-                onClick={() => setIsAutoChangesOpen((open) => !open)}
-                disabled={autoChanges.length === 0}
-              >
-                <Sparkles className="w-4 h-4 mr-1" />
-                {t('toolbar.autoChanges')}
-                {unseenAutoChanges.length > 0 && (
-                  <span className="ml-1 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-700">
-                    {unseenAutoChanges.length}
-                  </span>
-                )}
-              </Button>
+            {aiEnabled && (
+              <div ref={autoChangesRef} className="relative">
+                <Button
+                  variant={isAutoChangesOpen ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setIsAutoChangesOpen((open) => !open)}
+                  disabled={autoChanges.length === 0}
+                >
+                  <Sparkles className="w-4 h-4 mr-1" />
+                  {t('toolbar.autoChanges')}
+                  {pendingAutoChanges.length > 0 && (
+                    <span className="ml-1 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-700">
+                      {pendingAutoChanges.length}
+                    </span>
+                  )}
+                </Button>
 
-              {isAutoChangesOpen && (
-                <div className="absolute right-0 top-full z-20 mt-2">
-                  <AutoChangesPanel
-                    autoChanges={autoChanges}
-                    onRevert={(changeId) => {
-                      void handleRevertAutoChange(changeId);
-                    }}
-                    onMarkSeen={handleMarkSeen}
-                  />
-                </div>
-              )}
-            </div>
+                {isAutoChangesOpen && (
+                  <div className="absolute right-0 top-full z-20 mt-2">
+                    <AutoChangesPanel
+                      autoChanges={autoChanges}
+                      onRevert={(changeId) => {
+                        void handleDiscardAutoChange(changeId);
+                      }}
+                      onMarkSeen={(changeId) => {
+                        void handleConfirmAutoChange(changeId);
+                      }}
+                      onConfirmAll={() => {
+                        void handleConfirmAllAutoChanges();
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Compare Button */}
             <Button

@@ -8,6 +8,7 @@ import { detectText, inpaintRegion, mergePatchIntoImage } from '@/lib/api-client
 import { buildAutoRepairCandidates, shouldDropAsyncResult, shouldUseAutoAi } from '@/lib/auto-repair';
 import { enhanceDetectionsWithStyles } from '@/lib/color-sampler';
 import { estimateRegionComplexity, generateCleanBackground } from '@/lib/clean-background';
+import { isAiEnabled } from '@/lib/deploy-target';
 import { useI18n } from '@/lib/i18n';
 import type { AutoChange, ImagePatch, TextElement } from '@/types/canvas';
 import type { BoundingBox } from '@/types/ocr';
@@ -74,8 +75,13 @@ export function ImageUploader() {
     applyAutoPatch,
   } = useEditorStore();
   const { t } = useI18n();
+  const aiEnabled = isAiEnabled();
 
   const runAutoAiQueue = useCallback(async (imageUrl: string) => {
+    if (!aiEnabled) {
+      return;
+    }
+
     const initialPageModel = useEditorStore.getState().pageModel;
     if (!initialPageModel) {
       return;
@@ -98,7 +104,9 @@ export function ImageUploader() {
         }
 
         const submittedRevision = useEditorStore.getState().autoAiRevision;
-        const baseLayerForApply = stateBeforeComplexity.currentLayer ?? stateBeforeComplexity.baseAutoLayer ?? imageUrl;
+        const baseLayerForApply = stateBeforeComplexity.baseAutoLayer
+          ?? stateBeforeComplexity.pageModel?.cleanLayer
+          ?? imageUrl;
         const response = await inpaintRegion({
           imageDataUrl: baseLayerForApply,
           source: baseLayerForApply === imageUrl ? 'original' : 'cleanLayer',
@@ -129,8 +137,9 @@ export function ImageUploader() {
             throw new Error('Inpaint API returned no patch image');
           }
 
+          const previewBaseLayer = latestState.currentLayer ?? latestState.baseAutoLayer ?? imageUrl;
           const nextCurrentLayer = await mergePatchIntoImage(
-            baseLayerForApply,
+            previewBaseLayer,
             patchImage,
             patchCrop,
             {
@@ -154,12 +163,11 @@ export function ImageUploader() {
             patchImage,
           );
           applyAutoPatch(patch, autoChange, nextCurrentLayer);
-          useEditorStore.getState().setCurrentLayer(nextCurrentLayer);
         } catch (error) {
           console.error(`Failed to auto repair region ${candidate.regionId}:`, error);
         }
     }
-  }, [applyAutoPatch]);
+  }, [aiEnabled, applyAutoPatch]);
 
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
     const file = acceptedFiles[0];
@@ -209,7 +217,7 @@ export function ImageUploader() {
         setBaseAutoLayer(cleanLayer);
         setCurrentLayer(cleanLayer);
         setPreviewMode('current');
-        shouldStartAutoAi = true;
+        shouldStartAutoAi = aiEnabled;
       } catch (error) {
         console.error('Failed to generate initial clean background:', error);
         alert(`${t('toolbar.refreshCleanBackground')}: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -229,6 +237,7 @@ export function ImageUploader() {
   }, [
     initializeFromDetections,
     loadImage,
+    aiEnabled,
     runAutoAiQueue,
     setBaseAutoLayer,
     setCleanLayer,

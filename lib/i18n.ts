@@ -19,7 +19,7 @@ const translations = {
     'toolbar.refreshCleanBackground': 'Refresh Clean BG',
     'toolbar.refreshingCleanBackground': 'Refreshing...',
     'toolbar.previewOriginal': 'Original',
-    'toolbar.previewAuto': 'Auto',
+    'toolbar.previewAuto': 'Background layer',
     'toolbar.previewCurrent': 'Current',
     'toolbar.selectMode': 'Select mode',
     'toolbar.eraserMode': 'Eraser mode',
@@ -39,8 +39,14 @@ const translations = {
     'toolbar.autoChangeStatus.new': 'New',
     'toolbar.autoChangeStatus.seen': 'Seen',
     'toolbar.autoChangeStatus.reverted': 'Reverted',
+    'toolbar.autoChangeStatus.pending': 'Pending',
+    'toolbar.autoChangeStatus.confirmed': 'Confirmed',
+    'toolbar.autoChangeStatus.discarded': 'Discarded',
     'toolbar.markSeen': 'Mark seen',
     'toolbar.revertAutoChange': 'Revert',
+    'toolbar.confirmAutoChange': 'Confirm',
+    'toolbar.discardAutoChange': 'Discard',
+    'toolbar.confirmAllAutoChanges': 'Confirm all',
 
     // ImageUploader
     'uploader.dropHere': 'Drop image here...',
@@ -92,6 +98,9 @@ const translations = {
     'controls.deleteRegion': 'Delete Region',
     'controls.deleteRegionHint': 'If this is a false OCR hit, delete it and treat it as background.',
     'controls.resetToOriginal': 'Reset to Original',
+    'controls.localRepair': 'Local repair',
+    'controls.aiRepair': 'AI repair',
+    'controls.pendingAiRepair': 'Pending AI repair',
 
     // Font categories
     'font.sansSerif': 'Sans-serif',
@@ -123,7 +132,7 @@ const translations = {
     'toolbar.refreshCleanBackground': '重新生成干净背景',
     'toolbar.refreshingCleanBackground': '重新生成中...',
     'toolbar.previewOriginal': '原图',
-    'toolbar.previewAuto': '自动层',
+    'toolbar.previewAuto': '背景层',
     'toolbar.previewCurrent': '当前',
     'toolbar.selectMode': '选择模式',
     'toolbar.eraserMode': '橡皮擦模式',
@@ -143,8 +152,14 @@ const translations = {
     'toolbar.autoChangeStatus.new': '新改动',
     'toolbar.autoChangeStatus.seen': '已查看',
     'toolbar.autoChangeStatus.reverted': '已回退',
+    'toolbar.autoChangeStatus.pending': '待确认',
+    'toolbar.autoChangeStatus.confirmed': '已确认',
+    'toolbar.autoChangeStatus.discarded': '已丢弃',
     'toolbar.markSeen': '标为已看',
     'toolbar.revertAutoChange': '回退',
+    'toolbar.confirmAutoChange': '确认',
+    'toolbar.discardAutoChange': '丢弃',
+    'toolbar.confirmAllAutoChanges': '全部确认',
 
     // ImageUploader
     'uploader.dropHere': '将图片拖放到这里...',
@@ -196,6 +211,9 @@ const translations = {
     'controls.deleteRegion': '删除此项',
     'controls.deleteRegionHint': '如果这是 OCR 误识别，直接删除即可，系统会把它当作背景处理。',
     'controls.resetToOriginal': '重置为原始值',
+    'controls.localRepair': '局部修复',
+    'controls.aiRepair': 'AI 修复',
+    'controls.pendingAiRepair': '待确认 AI 修复',
 
     // Font categories
     'font.sansSerif': '无衬线',

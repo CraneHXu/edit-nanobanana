@@ -6,8 +6,9 @@ import { detectText, inpaintRegion, mergePatchIntoImage } from '@/lib/api-client
 import { enhanceDetectionsWithStyles } from '@/lib/color-sampler';
 import { loadGoogleFont } from '@/lib/font-loader';
 import { generateCleanBackground } from '@/lib/clean-background';
+import { isAiEnabled } from '@/lib/deploy-target';
 import { useEditorStore, getRoiOverlapRegionIds } from '@/store/editorStore';
-import type { EraserPath } from '@/types/canvas';
+import type { EraserPath, PageModel } from '@/types/canvas';
 import type { BoundingBox } from '@/types/ocr';
 import {
   createTextObject,
@@ -18,8 +19,6 @@ import {
   syncTextObject,
 } from '@/lib/fabric-utils';
 import { resolvePreviewBackground } from '@/lib/editor-layer';
-import { useI18n } from '@/lib/i18n';
-import type { AutoChange } from '@/types/canvas';
 
 const DEFAULT_FONT = 'Noto Sans SC';
 
@@ -166,6 +165,88 @@ async function cropImageAsset(
   };
 }
 
+async function buildRestorePatchAsset(
+  imageDataUrl: string,
+  regionBounds: BoundingBox,
+  eraserPaths: EraserPath[],
+): Promise<{ dataUrl: string; crop: BoundingBox } | null> {
+  if (eraserPaths.length === 0) {
+    return null;
+  }
+
+  const image = await loadImageElement(imageDataUrl);
+  const expandedBounds = expandBoundingBox(regionBounds);
+  const crop = clampBounds(expandedBounds, image.width, image.height);
+  if (!crop) {
+    return null;
+  }
+
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(crop.width);
+  canvas.height = Math.round(crop.height);
+
+  const context = canvas.getContext('2d');
+  if (!context) {
+    throw new Error('Failed to create restore patch canvas context');
+  }
+
+  context.clearRect(0, 0, canvas.width, canvas.height);
+
+  eraserPaths.forEach((path) => {
+    const centerX = expandedBounds.x + path.x - crop.x;
+    const centerY = expandedBounds.y + path.y - crop.y;
+
+    context.save();
+    context.beginPath();
+    context.arc(centerX, centerY, path.radius, 0, Math.PI * 2);
+    context.clip();
+    context.drawImage(
+      image,
+      crop.x,
+      crop.y,
+      crop.width,
+      crop.height,
+      0,
+      0,
+      crop.width,
+      crop.height,
+    );
+    context.restore();
+  });
+
+  return {
+    dataUrl: canvas.toDataURL('image/png'),
+    crop,
+  };
+}
+
+async function composePendingPreviewLayer(
+  baseLayer: string,
+  pageModel: PageModel,
+  skipRegionIds: number[],
+): Promise<string> {
+  let nextLayer = baseLayer;
+  const pageSize = {
+    width: pageModel.originalWidth,
+    height: pageModel.originalHeight,
+  };
+
+  const pendingPatches = [...(pageModel.autoChanges ?? [])]
+    .sort((left, right) => left.createdAt - right.createdAt)
+    .map((change) => change.patch)
+    .filter((patch): patch is NonNullable<typeof patch> => (
+      !!patch?.imageDataUrl
+      && !!patch.crop
+      && !patch.regionIds.some((regionId) => skipRegionIds.includes(regionId))
+    ));
+
+  for (const patch of pendingPatches) {
+    nextLayer = await mergePatchIntoImage(nextLayer, patch.imageDataUrl!, patch.crop!, pageSize);
+  }
+
+  return nextLayer;
+}
+
 export function CanvasEditor() {
   const containerRef = useRef<HTMLDivElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -182,6 +263,8 @@ export function CanvasEditor() {
   const [cursorPos, setCursorPos] = useState<{ x: number; y: number } | null>(null);
   const [draftBox, setDraftBox] = useState<DraftBox | null>(null);
   const isDrawingRef = useRef(false);
+  const erasedRegionIdsRef = useRef(new Set<number>());
+  const aiEnabled = isAiEnabled();
 
   const {
     originalImage,
@@ -189,7 +272,6 @@ export function CanvasEditor() {
     canvasScale,
     setCanvas,
     setCanvasScale,
-    setCleanLayer,
     setIsCleaningBackground,
     setSelectedElement,
     updateElement,
@@ -212,7 +294,6 @@ export function CanvasEditor() {
     setPreviewMode,
     isCleaningBackground,
   } = useEditorStore();
-  const { t } = useI18n();
 
   useEffect(() => {
     pageModelRef.current = pageModel;
@@ -273,11 +354,11 @@ export function CanvasEditor() {
     if (!isCanvasValid(currentCanvas)) return;
 
     const backgroundSource = isComparing
-      ? originalImage
-      : resolvePreviewBackground({
+        ? originalImage
+        : resolvePreviewBackground({
           previewMode,
           originalImage,
-          baseAutoLayer: pageModel?.cleanLayer ?? baseAutoLayer,
+          baseAutoLayer: baseAutoLayer ?? pageModel?.cleanLayer ?? null,
           currentLayer,
         }) ?? originalImage;
 
@@ -335,11 +416,16 @@ export function CanvasEditor() {
     const nextScaleY = textObj.scaleY || 1;
     const baseWidth = Number(textObj.width || textObj.getScaledWidth() || 0);
     const baseHeight = Number(textObj.height || textObj.getScaledHeight() || 0);
+    const isManualRegion = region.source === 'manual';
     const nextBbox = {
       x: roundToImagePixel(((textObj.left || 0) - scaledOffset.x) / scale),
       y: roundToImagePixel(((textObj.top || 0) - scaledOffset.y) / scale),
-      width: roundToImagePixel((baseWidth * nextScaleX) / scale),
-      height: roundToImagePixel((((region.layoutOffsetY * scale) + (baseHeight * nextScaleY)) / scale)),
+      width: isManualRegion
+        ? roundToImagePixel(region.bbox.width * nextScaleX)
+        : roundToImagePixel((baseWidth * nextScaleX) / scale),
+      height: isManualRegion
+        ? roundToImagePixel(region.bbox.height * nextScaleY)
+        : roundToImagePixel((((region.layoutOffsetY * scale) + (baseHeight * nextScaleY)) / scale)),
     };
 
     updateElement(elementId, {
@@ -351,22 +437,71 @@ export function CanvasEditor() {
     });
   }, [updateElement]);
 
-  const refreshCleanLayerFromStore = useCallback(async () => {
+  const applyEraserRestorePatches = useCallback(async () => {
     const state = useEditorStore.getState();
     if (!state.originalImage || !state.pageModel) {
       return;
     }
 
-    setIsCleaningBackground(true);
     try {
-      const cleanLayer = await generateCleanBackground(state.originalImage, state.pageModel);
-      setCleanLayer(cleanLayer);
+      const regionIds = Array.from(erasedRegionIdsRef.current);
+      if (regionIds.length === 0) {
+        return;
+      }
+
+      const pageSize = {
+        width: state.pageModel.originalWidth,
+        height: state.pageModel.originalHeight,
+      };
+
+      for (const regionId of regionIds) {
+        const latestState = useEditorStore.getState();
+        if (!latestState.originalImage || !latestState.pageModel) {
+          return;
+        }
+
+        const region = latestState.pageModel.regions.find((item) => item.id === regionId && !item.removed);
+        if (!region || region.eraserPaths.length === 0) {
+          continue;
+        }
+
+        const restoreAsset = await buildRestorePatchAsset(
+          latestState.originalImage,
+          region.sourceBounds,
+          region.eraserPaths,
+        );
+        if (!restoreAsset) {
+          continue;
+        }
+
+        const confirmedBaseLayer = latestState.baseAutoLayer ?? latestState.pageModel.cleanLayer ?? latestState.originalImage;
+        const nextConfirmedLayer = await mergePatchIntoImage(
+          confirmedBaseLayer,
+          restoreAsset.dataUrl,
+          restoreAsset.crop,
+          pageSize,
+        );
+        const nextLayer = await composePendingPreviewLayer(nextConfirmedLayer, latestState.pageModel, [regionId]);
+        const createdAt = Date.now();
+
+        applyPatch({
+          id: `restore-original-${regionId}-${createdAt}`,
+          kind: 'restore_original',
+          regionIds: [regionId],
+          roiId: `eraser-${regionId}`,
+          previewMode: 'current',
+          createdAt,
+          applied: true,
+          reverted: false,
+          description: `Restore original background for region ${regionId}`,
+          crop: restoreAsset.crop,
+          imageDataUrl: restoreAsset.dataUrl,
+        }, nextLayer);
+      }
     } catch (error) {
-      console.error('Failed to refresh clean background after eraser edit:', error);
-    } finally {
-      setIsCleaningBackground(false);
+      console.error('Failed to apply eraser restore patch:', error);
     }
-  }, [setCleanLayer, setIsCleaningBackground]);
+  }, [applyPatch]);
 
   const applyRoiAction = useCallback(async (roiBounds: BoundingBox) => {
     const state = useEditorStore.getState();
@@ -387,10 +522,49 @@ export function CanvasEditor() {
     if (state.pendingRoiAction === 'ocr') {
       state.setIsDetecting(true);
       try {
+        const createdAt = Date.now();
         const crop = await cropImageAsset(state.originalImage, roiBounds, 'roi-ocr.png');
         const response = await detectText(crop.file);
         const detections = await enhanceDetectionsWithStyles(response.detections, crop.dataUrl);
         await mergeRoiDetections(roiBounds, detections);
+
+        const latestState = useEditorStore.getState();
+        if (!latestState.originalImage || !latestState.pageModel) {
+          return;
+        }
+
+        const cleanLayer = await generateCleanBackground(latestState.originalImage, latestState.pageModel);
+        useEditorStore.setState((storeState) => {
+          if (!storeState.pageModel) {
+            return storeState;
+          }
+
+          return {
+            pageModel: {
+              ...storeState.pageModel,
+              cleanLayer,
+            },
+          };
+        });
+
+        const confirmedBaseLayer = latestState.baseAutoLayer ?? latestState.originalImage;
+        const patchAsset = await cropImageAsset(cleanLayer, roiBounds, 'roi-ocr-clean.png');
+        const nextRegionIds = getRoiOverlapRegionIds(useEditorStore.getState().pageModel?.regions ?? [], roiBounds);
+        const nextConfirmedLayer = await mergePatchIntoImage(confirmedBaseLayer, patchAsset.dataUrl, roiBounds, pageSize);
+        const nextLayer = await composePendingPreviewLayer(nextConfirmedLayer, latestState.pageModel, nextRegionIds);
+
+        applyPatch({
+          id: `roi-ocr-clean-${createdAt}`,
+          kind: 'local_clean',
+          regionIds: nextRegionIds,
+          roiId: `roi-ocr-${createdAt}`,
+          previewMode: 'current',
+          createdAt,
+          applied: true,
+          reverted: false,
+          description: 'ROI OCR local clean',
+        }, nextLayer);
+        setPreviewMode('current');
       } catch (error) {
         console.error('ROI OCR failed:', error);
         alert(`ROI OCR failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -403,12 +577,13 @@ export function CanvasEditor() {
     state.setIsCleaningBackground(true);
     try {
       const createdAt = Date.now();
-      const baseLayer = state.currentLayer ?? state.pageModel.cleanLayer ?? state.baseAutoLayer ?? state.originalImage;
+      const confirmedBaseLayer = state.baseAutoLayer ?? state.pageModel.cleanLayer ?? state.originalImage;
 
       if (state.pendingRoiAction === 'local-repair') {
         const cleanLayer = await generateCleanBackground(state.originalImage, state.pageModel);
         const patchAsset = await cropImageAsset(cleanLayer, roiBounds, 'roi-local-repair.png');
-        const nextLayer = await mergePatchIntoImage(baseLayer, patchAsset.dataUrl, roiBounds, pageSize);
+        const nextConfirmedLayer = await mergePatchIntoImage(confirmedBaseLayer, patchAsset.dataUrl, roiBounds, pageSize);
+        const nextLayer = await composePendingPreviewLayer(nextConfirmedLayer, state.pageModel, overlappingRegionIds);
 
         applyPatch({
           id: `local-clean-${createdAt}`,
@@ -426,8 +601,8 @@ export function CanvasEditor() {
       }
 
       const response = await inpaintRegion({
-        imageDataUrl: baseLayer,
-        source: baseLayer === state.originalImage ? 'original' : 'cleanLayer',
+        imageDataUrl: confirmedBaseLayer,
+        source: confirmedBaseLayer === state.originalImage ? 'original' : 'cleanLayer',
         sourceBounds: roiBounds,
         pageSize,
       });
@@ -437,7 +612,8 @@ export function CanvasEditor() {
         throw new Error('AI repair returned no patch image');
       }
 
-      const nextLayer = await mergePatchIntoImage(baseLayer, patchImage, patchCrop, pageSize);
+      const previewBaseLayer = state.currentLayer ?? confirmedBaseLayer;
+      const nextLayer = await mergePatchIntoImage(previewBaseLayer, patchImage, patchCrop, pageSize);
       applyPatch({
         id: response.patchId ?? `manual-ai-${createdAt}`,
         kind: 'manual_ai',
@@ -549,6 +725,7 @@ export function CanvasEditor() {
         };
 
         eraserMutatedRef.current = true;
+        erasedRegionIdsRef.current.add(found.id);
         updateElement(found.id, {
           eraserPaths: [...region.eraserPaths, newPath],
         });
@@ -573,8 +750,12 @@ export function CanvasEditor() {
         isDrawingRef.current = false;
         if (eraserMutatedRef.current) {
           eraserMutatedRef.current = false;
-          void refreshCleanLayerFromStore();
+          void applyEraserRestorePatches().finally(() => {
+            erasedRegionIdsRef.current.clear();
+          });
+          return;
         }
+        erasedRegionIdsRef.current.clear();
       };
 
       const handleMouseOut = () => {
@@ -602,6 +783,7 @@ export function CanvasEditor() {
           }
         });
         setCursorPos(null);
+        erasedRegionIdsRef.current.clear();
       };
     }
 
@@ -729,7 +911,7 @@ export function CanvasEditor() {
     setCursorPos(null);
     dragStartRef.current = null;
     setDraftBox(null);
-  }, [addManualElement, applyRoiAction, editorMode, isCleaningBackground, isDetecting, refreshCleanLayerFromStore, setEditorMode, setPendingRoiAction, updateElement]);
+  }, [addManualElement, applyEraserRestorePatches, applyRoiAction, editorMode, isCleaningBackground, isDetecting, setEditorMode, setPendingRoiAction, updateElement]);
 
   useEffect(() => {
     if (!fabricReady) return;
@@ -779,7 +961,7 @@ export function CanvasEditor() {
   }, [setViewportZoom, viewportZoom]);
 
   const autoChangedRegionIds = new Set(
-    (pageModel?.autoChanges ?? [])
+    (aiEnabled ? (pageModel?.autoChanges ?? []) : [])
       .filter((change) => change.status === 'new')
       .flatMap((change) => change.regionIds),
   );
@@ -811,9 +993,10 @@ export function CanvasEditor() {
                 height: region.sourceBounds.height * canvasScale,
               }}
             >
-              <span className="absolute -top-5 left-0 rounded-full bg-emerald-500 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-white">
-                {t('canvas.autoChange')}
-              </span>
+              <div
+                aria-hidden="true"
+                className="absolute left-1 top-1 h-2 w-2 rounded-full bg-emerald-600/80 shadow-[0_0_0_1px_rgba(255,255,255,0.55)]"
+              />
             </div>
           ))}
           {editorMode === 'eraser' && cursorPos && (

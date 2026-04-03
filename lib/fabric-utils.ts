@@ -94,7 +94,7 @@ export function createTextObject(
   region: TextElement,
   scale: number,
 ): FabricTextObject {
-  const multiline = shouldUseTextbox(region.text);
+  const multiline = region.source === 'manual' || shouldUseTextbox(region.text);
   const textObj = multiline
     ? new fabric.Textbox(region.text, {
         selectable: true,
@@ -129,7 +129,8 @@ export function createTextObject(
 export function syncTextObject(textObj: FabricTextObject, region: TextElement, scale: number): void {
   const bounds = scaleBoundingBox(region.bbox, scale);
   const anchor = getTextAnchorPoint(region, scale);
-  const multiline = shouldUseTextbox(region.text);
+  const multiline = region.source === 'manual' || shouldUseTextbox(region.text);
+  const fixedManualBox = region.source === 'manual';
 
   textObj.set({
     left: anchor.left,
@@ -158,6 +159,14 @@ export function syncTextObject(textObj: FabricTextObject, region: TextElement, s
   }
 
   refreshTextboxLayout(textObj);
+
+  if (fixedManualBox) {
+    textObj.set({
+      width: Math.max(1, bounds.width),
+      height: Math.max(1, bounds.height),
+    });
+    textObj.setCoords();
+  }
 }
 
 interface ExportCanvasOptions {

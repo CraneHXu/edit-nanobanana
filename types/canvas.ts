@@ -98,6 +98,7 @@ export interface AutoChange {
   reverted: boolean;
   description?: string;
   status?: AutoChangeStatus;
+  patch?: ImagePatch;
 }
 
 export interface PageModel {

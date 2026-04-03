@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { Eye, EyeOff, Trash2 } from 'lucide-react';
+import { isAiEnabled } from '@/lib/deploy-target';
 import { useEditorStore } from '@/store/editorStore';
 import { useI18n } from '@/lib/i18n';
 
@@ -22,6 +23,7 @@ function getSourceBadgeLabel(source: string | undefined, t: Translate) {
 export function Sidebar() {
   const {
     pageModel,
+    baseAutoLayer,
     selectedElementId,
     setSelectedElement,
     deleteElement,
@@ -29,8 +31,46 @@ export function Sidebar() {
     canvas,
   } = useEditorStore();
   const { t } = useI18n();
+  const aiEnabled = isAiEnabled();
 
   const elements = (pageModel?.regions ?? []).filter((element) => !element.removed);
+  const hasLocalRepairBackground = !!(baseAutoLayer ?? pageModel?.cleanLayer);
+  const pendingAiRegionIds = new Set(
+    (aiEnabled ? (pageModel?.autoChanges ?? []) : [])
+      .filter((change) => (change.status ?? 'seen') === 'new')
+      .filter((change) => change.patchKind === 'auto_ai')
+      .flatMap((change) => change.regionIds),
+  );
+  const confirmedRepairByRegion = React.useMemo(() => {
+    const entries = new Map<number, 'local' | 'ai'>();
+    const patches = [...(pageModel?.patches ?? [])]
+      .filter((patch) => patch && !patch.reverted)
+      .sort((left, right) => (left.createdAt ?? 0) - (right.createdAt ?? 0));
+
+    for (const patch of patches) {
+      if (!patch) continue;
+      const kind = patch.kind === 'local_clean'
+        ? 'local'
+        : (aiEnabled && (patch.kind === 'manual_ai' || patch.kind === 'auto_ai'))
+          ? 'ai'
+          : null;
+      if (!kind) continue;
+      for (const regionId of patch.regionIds ?? []) {
+        entries.set(regionId, kind);
+      }
+    }
+
+    return entries;
+  }, [pageModel?.patches]);
+  const elementRefs = React.useRef(new Map<number, HTMLDivElement>());
+
+  React.useEffect(() => {
+    if (selectedElementId == null) return;
+    const node = elementRefs.current.get(selectedElementId);
+    if (node && typeof (node as any).scrollIntoView === 'function') {
+      node.scrollIntoView({ block: 'nearest' });
+    }
+  }, [selectedElementId, elements.length]);
 
   const handleSelectElement = (id: number) => {
     setSelectedElement(id);
@@ -76,6 +116,14 @@ export function Sidebar() {
         {elements.map((element) => (
           <div
             key={element.id}
+            ref={(node) => {
+              if (!node) {
+                elementRefs.current.delete(element.id);
+                return;
+              }
+              elementRefs.current.set(element.id, node);
+            }}
+            data-testid={`sidebar-item-${element.id}`}
             onClick={() => handleSelectElement(element.id)}
             className={`
               w-full text-left px-3 py-2 rounded-md text-sm cursor-pointer
@@ -125,17 +173,79 @@ export function Sidebar() {
                 [{element.id}]
               </div>
               <div className="mb-1 flex flex-wrap gap-1">
-                <span
-                  className={`
-                    rounded-full px-1.5 py-0.5 text-[10px] font-medium
-                    ${selectedElementId === element.id
-                      ? 'bg-primary-foreground/20 text-primary-foreground'
-                      : 'bg-slate-200 text-slate-700'
-                    }
-                  `}
-                >
-                  {getSourceBadgeLabel(element.source, t)}
-                </span>
+                {(() => {
+                  const isPendingAiRepair = pendingAiRegionIds.has(element.id);
+                  const confirmedRepairKind = confirmedRepairByRegion.get(element.id) ?? null;
+                  const isOcrRegion = element.source == null || element.source === 'ocr' || element.source === 'roi_ocr';
+                  const shouldShowAiRepair = !isPendingAiRepair && confirmedRepairKind === 'ai';
+                  const shouldShowLocalRepair = (
+                    (!isPendingAiRepair && confirmedRepairKind === 'local')
+                    || (
+                      hasLocalRepairBackground
+                      && isOcrRegion
+                      && !isPendingAiRepair
+                      && confirmedRepairKind !== 'ai'
+                    )
+                  );
+
+                  return (
+                    <>
+                      <span
+                        className={`
+                          rounded-full px-1.5 py-0.5 text-[10px] font-medium
+                          ${selectedElementId === element.id
+                            ? 'bg-primary-foreground/20 text-primary-foreground'
+                            : 'bg-slate-200 text-slate-700'
+                          }
+                        `}
+                      >
+                        {getSourceBadgeLabel(element.source, t)}
+                      </span>
+
+                      {shouldShowLocalRepair && (
+                        <span
+                          className={`
+                            rounded-full px-1.5 py-0.5 text-[10px] font-medium
+                            ${selectedElementId === element.id
+                              ? 'bg-sky-200/40 text-primary-foreground'
+                              : 'bg-sky-100 text-sky-700'
+                            }
+                          `}
+                        >
+                          {t('controls.localRepair')}
+                        </span>
+                      )}
+
+                      {shouldShowAiRepair && (
+                        <span
+                          className={`
+                            rounded-full px-1.5 py-0.5 text-[10px] font-medium
+                            ${selectedElementId === element.id
+                              ? 'bg-violet-200/40 text-primary-foreground'
+                              : 'bg-violet-100 text-violet-700'
+                            }
+                          `}
+                        >
+                          {t('controls.aiRepair')}
+                        </span>
+                      )}
+
+                      {isPendingAiRepair && (
+                        <span
+                          className={`
+                            rounded-full px-1.5 py-0.5 text-[10px] font-medium
+                            ${selectedElementId === element.id
+                              ? 'bg-emerald-200/40 text-primary-foreground'
+                              : 'bg-emerald-100 text-emerald-700'
+                            }
+                          `}
+                        >
+                          {t('controls.pendingAiRepair')}
+                        </span>
+                      )}
+                    </>
+                  );
+                })()}
                 {element.excludedFromClean && (
                   <span
                     className={`

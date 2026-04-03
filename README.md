@@ -1,310 +1,216 @@
-[English Version](#English)
+# NanoBanana 图片文字编辑器
 
-一个基于 Web 的图片文字编辑器。上传图片后会直接进入编辑页，自动执行 OCR、fast local clean，并对复杂区域渐进补充 AI 修复，让你直接在最终图层上编辑和导出。
+一个基于 Web 的图片文字编辑器。上传图片后会直接进入编辑页，自动执行 OCR、生成背景层，并在本地模式下对复杂区域渐进补充 AI 修复，让你直接在最终图层上编辑和导出。
 
-在线demo：https://image-editor-web-tan.vercel.app/
+在线演示：<https://image-editor-web-tan.vercel.app/>
+
+## 项目模式
+
+项目通过一个环境变量控制运行模式：
+
+- `NEXT_PUBLIC_DEPLOY_TARGET=local`
+  - 用于本地开发
+  - 启用 AI 功能
+  - 显示 `AI repair`、自动 AI、待确认 AI 面板
+  - `/api/inpaint` 可用
+- `NEXT_PUBLIC_DEPLOY_TARGET=vercel`
+  - 用于 Vercel 部署
+  - 禁用 AI 功能
+  - 隐藏所有 AI 入口
+  - `/api/inpaint` 直接返回禁用错误
+  - 只保留 OCR + 背景层 + 本地修复
+
+如果未设置，默认按 `local` 处理。
 
 ## 功能特点
 
-- **上传即编辑**：上传完成后直接进入编辑页，无需额外确认步骤
-- **OCR + fast local clean**：使用 PaddleOCR 自动检测文字，并立即生成首版干净底图
-- **渐进自动 AI 修复**：复杂区域会继续排队执行自动 AI 修复，结果可查看和回退
-- **文字编辑**：编辑检测到的文字内容，更改字体、调整字号和颜色
-- **背景遮盖**：自动生成背景遮盖层隐藏原始文字
-- **橡皮擦工具**：精确擦除部分背景遮盖，露出原始图片
-- **ROI 局部纠错**：通过 ROI OCR、Local repair、AI repair 处理局部问题区域
-- **误识别删除恢复原图**：删除误识别框时会恢复该区域对应的原图影响
-- **对比模式**：按住对比按钮查看原图
-- **多语言支持**：中英文界面切换
-- **丰富字体库**：支持 Google Fonts，包括中日韩（CJK）字体
-- **导出功能**：以当前最终图层为准，按原始分辨率导出 PNG 图片
+- 上传即编辑
+- OCR + 自动背景层生成
+- 文字内容、字体、字号、颜色编辑
+- ROI OCR 局部重识别
+- Local repair 局部背景修复
+- 本地模式下支持 AI repair 与自动 AI
+- 背景层预览
+- 误识别删除恢复原图
+- 橡皮擦恢复原始背景细节
+- 原图对比
+- 导出 PNG
 
-## 技术栈
+## 环境要求
 
-- **框架**：Next.js 15 (App Router)
-- **UI**：React 19 + Tailwind CSS + Radix UI
-- **画布**：Fabric.js 6
-- **状态管理**：Zustand
-- **OCR**：PaddleOCR（通过 API 调用）
+- Node.js 18+
+- npm 9+
+- 可用的 PaddleOCR 服务
+- 如果要启用 AI：可运行的 IOPaint 服务
 
-## 使用指南
+## 快速开始
+
+### 1. 安装依赖
+
+```bash
+cd image-editor-web
+npm install
+cp .env.example .env.local
+```
+
+### 2. 配置环境变量
+
+编辑 `.env.local`：
+
+```env
+NEXT_PUBLIC_DEPLOY_TARGET=local
+
+OCR_API_URL=https://your-paddleocr-api-url/ocr
+OCR_API_TOKEN=your_ocr_token
+
+INPAINT_PROVIDER=iopaint
+INPAINT_API_URL=http://127.0.0.1:8080/api/v1/inpaint
+INPAINT_API_TOKEN=
+```
+
+说明：
+
+- 如果你只想跑本地 OCR + 本地修复，不启用 AI，也可以把 `NEXT_PUBLIC_DEPLOY_TARGET` 设成 `vercel`
+- `vercel` 模式下会直接禁用 AI 相关能力，`INPAINT_*` 配置不会被使用
+
+### 3. 启动前端
+
+本地完整模式：
+
+```bash
+npm run dev:local
+```
+
+模拟 Vercel 无 AI 模式：
+
+```bash
+npm run dev:vercel
+```
+
+默认开发命令：
+
+```bash
+npm run dev
+```
+
+浏览器打开 <http://localhost:3000>
+
+## 使用说明
 
 ### 基本流程
 
-1. **上传图片**：拖放或点击上传图片（支持 PNG、JPG、JPEG、WEBP，最大 10MB），上传后直接进入编辑页
-2. **自动首轮处理**：系统会自动完成 OCR 和 fast local clean，先生成可编辑的干净底图
-3. **渐进自动修复**：复杂背景区域会继续渐进执行自动 AI 修复，自动变更会出现在 Auto changes 面板中，可随时回退
-4. **编辑文字**：点击检测到的文字进行选择和编辑，调整字体、大小、颜色
-5. **局部纠错**：通过 ROI 框选进入 ROI OCR、Local repair、AI repair，处理局部漏检、脏边或复杂区域
-6. **清理误识别**：删除误识别框时，会同时恢复该区域对应的原图影响，而不是留下错误遮盖
-7. **导出图片**：点击"导出 PNG"时，会以当前最终图层为准导出，包括仍然生效的自动/手动修复结果
+1. 上传图片
+2. 系统自动完成 OCR 和首轮背景层生成
+3. 点击 OCR 框，在右侧编辑文字或执行局部修复
+4. 用 `ROI OCR` 处理漏检或局部识别不准的区域
+5. 本地模式下，可对复杂区域使用 `AI repair`，并对第一次自动 AI 结果做确认/丢弃
+6. 导出 PNG
 
 ### 工具说明
 
 | 工具 | 说明 |
-|------|------|
-| 选择模式 | 点击选择文字元素进行编辑 |
-| 橡皮擦模式 | 在背景遮盖上涂抹以露出原始图片 |
-| ROI OCR / Local repair / AI repair | ROI 是局部纠错入口，可局部重做 OCR 或应用局部修复 |
-| Auto changes | 查看渐进自动 AI 修复结果，并按条目回退 |
+| --- | --- |
+| 选择模式 | 选择已有 OCR 框或手工框 |
+| 橡皮擦模式 | 在当前已确认背景层上恢复原图细节，例如印章 |
+| ROI OCR | 对框选区域重新 OCR，并局部覆盖结果 |
+| Local repair | 只对当前选中区域做本地背景修复 |
+| AI repair | 仅本地模式可用，对当前选中区域调用 AI 后端 |
+| 背景层 | 查看已确认的背景修复层 |
+| Auto changes | 仅本地模式可用，查看待确认 AI 修复 |
 | 对比 | 按住查看原图 |
-| 恢复全部 | 将所有元素重置为原始状态 |
-| 重新开始 | 清除所有内容，重新开始 |
 
-### 文字控制
+## AI 后端部署教程
 
-- **显示/隐藏背景**：切换背景遮盖的可见性
-- **显示/隐藏文字**：切换文字的可见性
-- **字体**：从多种字体中选择，包括中文字体支持
-- **字号**：使用滑块或输入框调整
-- **字体颜色**：从检测到的颜色中选择或自定义
-- **背景颜色**：从检测到的颜色中选择或自定义
-- **重置为原始值**：将单个元素重置为原始状态
+本项目默认按 IOPaint 作为本地 AI inpaint 后端接入。
 
-## 已知限制
+官方参考：
 
-- 目前只支持纯色背景遮盖，无法自动匹配复杂纹理或渐变背景
+- IOPaint GitHub：<https://github.com/Sanster/IOPaint>
+- IOPaint 官网：<https://www.iopaint.com/>
 
-## TODO
+### 方案 A：直接使用 pip 安装
 
-- [ ] 支持渐变色背景遮盖
-- [ ] 支持纹理/图案背景填充
-- [ ] AI 智能背景修复（Inpainting）
-- [ ] 批量处理多张图片
-- [ ] 支持更多 OCR 引擎（如 Tesseract、Google Vision）
-- [ ] 撤销/重做功能
-- [ ] 自定义字体上传
-
-## 快速开始
-
-### 环境要求
-
-- Node.js 18+
-- PaddleOCR API 访问权限（或自建 PaddleOCR 服务）
-
-### 安装
+根据 IOPaint 官方 README，最简单的启动方式是：
 
 ```bash
-# 克隆仓库
-git clone https://github.com/yourusername/image-text-editor.git
-cd image-text-editor
-
-# 安装依赖
-npm install
-
-# 设置环境变量
-cp .env.example .env.local
-# 编辑 .env.local 并配置你的 OCR API
+pip3 install iopaint
+iopaint start --model=lama --device=cpu --port=8080
 ```
 
-### 环境变量
+本项目已经提供了一个本地启动脚本：
 
-创建 `.env.local` 文件：
+```bash
+npm run ai:start
+```
+
+它实际执行的是：
+
+```bash
+bash ./scripts/start-iopaint.sh
+```
+
+脚本支持这些环境变量：
+
+```bash
+IOPAINT_PORT=8080
+IOPAINT_MODEL=lama
+IOPAINT_DEVICE=cpu
+```
+
+例如：
+
+```bash
+IOPAINT_DEVICE=cuda IOPAINT_MODEL=lama npm run ai:start
+```
+
+### 方案 B：单独部署到另一台机器
+
+如果你想把 AI 后端部署到单独服务器：
+
+1. 在服务器上安装 IOPaint
+2. 启动 IOPaint 服务
+3. 确认前端机器可以访问该地址
+4. 在 `.env.local` 中把 `INPAINT_API_URL` 改成对应地址
+
+例如：
 
 ```env
-# PaddleOCR API 配置
-OCR_API_URL=https://your-paddleocr-api-url/ocr
-OCR_API_TOKEN=your_api_token_here
+INPAINT_PROVIDER=iopaint
+INPAINT_API_URL=http://your-server:8080/api/v1/inpaint
 ```
 
-你可以自建 PaddleOCR 服务，或使用托管服务如 [百度 AI Studio](https://aistudio.baidu.com/)。
+### 注意事项
 
-### 开发模式
+- IOPaint 首次启动会自动下载模型，第一次会比较慢
+- CPU 模式可直接跑，但速度慢；有 GPU 时建议按 IOPaint 官方说明先安装对应 PyTorch
+- 本项目当前只兼容本地部署模式中的 AI；Vercel 版本不提供 AI 功能
 
-```bash
-npm run dev
-```
+## Vercel 部署
 
-在浏览器中打开 [http://localhost:3000](http://localhost:3000)。
+如果你要部署到 Vercel，请直接看：
 
-### 生产构建
+- [DEPLOY.md](./DEPLOY.md)
 
-```bash
-npm run build
-npm start
-```
-
-## 贡献
-
-欢迎提交 Issue 和 Pull Request！
-
-如果这个项目对你有帮助，请给个 Star 支持一下！
-
-## 许可证
-
-MIT License
-
----
-
-# English
-
-# Image Text Editor
-
-A web-based image text editor. After upload, it jumps straight into the editor, runs OCR plus fast local clean automatically, and progressively applies AI repair on complex areas so you can edit and export against the final composed layer.
-
-
-## Features
-
-- **Upload Straight to Editing**: Enter the editor immediately after upload with no extra confirmation step
-- **OCR + Fast Local Clean**: Automatically detect text with PaddleOCR and generate the first clean base layer right away
-- **Progressive Auto AI Repair**: Queue complex regions for automatic AI repair, with visible changes that can be reverted
-- **Text Editing**: Edit detected text content, change fonts, adjust font size and colors
-- **Background Cover**: Automatically generate background covers to hide original text
-- **Eraser Tool**: Precisely erase parts of the background cover to reveal the original image
-- **ROI Local Correction**: Use ROI OCR, Local repair, and AI repair as targeted correction entry points
-- **Delete Misdetected Boxes Safely**: Removing a false-positive box restores the original image influence for that area
-- **Compare Mode**: Hold to compare with the original image
-- **Multi-language Support**: English and Chinese interface (i18n)
-- **Rich Font Library**: Support for Google Fonts including CJK (Chinese, Japanese, Korean) fonts
-- **Export**: Export PNG from the current final layer at the original resolution
-
-## Tech Stack
-
-- **Framework**: Next.js 15 (App Router)
-- **UI**: React 19 + Tailwind CSS + Radix UI
-- **Canvas**: Fabric.js 6
-- **State Management**: Zustand
-- **OCR**: PaddleOCR (via API)
-
-## Getting Started
-
-### Prerequisites
-
-- Node.js 18+
-- PaddleOCR API access (or self-hosted PaddleOCR service)
-
-### Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/image-text-editor.git
-cd image-text-editor
-
-# Install dependencies
-npm install
-
-# Set up environment variables
-cp .env.example .env.local
-# Edit .env.local and configure your OCR API
-```
-
-### Environment Variables
-
-Create a `.env.local` file with:
+Vercel 版本必须设置：
 
 ```env
-# PaddleOCR API Configuration
-OCR_API_URL=https://your-paddleocr-api-url/ocr
-OCR_API_TOKEN=your_api_token_here
+NEXT_PUBLIC_DEPLOY_TARGET=vercel
 ```
 
-You can deploy your own PaddleOCR service or use a hosted one like [Baidu AI Studio](https://aistudio.baidu.com/).
+Vercel 版本不提供 AI 功能。
 
-### Development
+## 生产启动
+
+本地模式：
 
 ```bash
-npm run dev
+npm run build:local
+npm run start:local
 ```
 
-Open [http://localhost:3000](http://localhost:3000) in your browser.
-
-### Production Build
+Vercel 模式：
 
 ```bash
-npm run build
-npm start
+npm run build:vercel
+npm run start:vercel
 ```
-
-## Usage Guide
-
-### Basic Workflow
-
-1. **Upload Image**: Drag and drop or click to upload an image (PNG, JPG, JPEG, WEBP, max 10MB), then go straight into the editor
-2. **Automatic First Pass**: OCR and fast local clean run automatically to build the initial clean base layer
-3. **Progressive Auto Repair**: Complex regions continue through automatic AI repair in the background, and each result shows up in the Auto changes panel for review or revert
-4. **Edit Text**: Click detected text to select it and adjust font, size, and color
-5. **Use ROI for Local Fixes**: ROI is the entry point for ROI OCR, Local repair, and AI repair when a small area needs correction
-6. **Remove False Positives**: Deleting a misdetected box restores the original image contribution for that area instead of leaving the wrong cleanup behind
-7. **Export**: "Export PNG" uses the current final layer, including any still-applied automatic or manual patches
-
-### Tools
-
-| Tool | Description |
-|------|-------------|
-| Select Mode | Click to select text elements for editing |
-| Eraser Mode | Paint on background covers to reveal original image |
-| ROI OCR / Local repair / AI repair | ROI is the local correction entry point for re-running OCR or applying targeted repair |
-| Auto changes | Review progressive automatic AI repairs and revert individual entries |
-| Compare | Hold to view original image |
-| Restore All | Reset all elements to original state |
-| Start Over | Clear everything and start fresh |
-
-### Text Controls
-
-- **Show/Hide Background**: Toggle the background cover visibility
-- **Show/Hide Text**: Toggle the text visibility
-- **Font Family**: Choose from various fonts including CJK support
-- **Font Size**: Adjust using slider or input field
-- **Font Color**: Pick from detected colors or custom color
-- **Background Color**: Pick from detected colors or custom color
-- **Reset to Original**: Reset individual element to original state
-
-## Project Structure
-
-```
-image-editor-web/
-├── app/                    # Next.js App Router
-│   ├── api/               # API routes
-│   │   └── ocr/          # OCR endpoint (PaddleOCR)
-│   └── page.tsx          # Main page
-├── components/
-│   ├── editor/           # Editor components
-│   │   ├── CanvasEditor.tsx
-│   │   ├── Toolbar.tsx
-│   │   ├── Sidebar.tsx
-│   │   ├── TextControls.tsx
-│   │   └── FontSelector.tsx
-│   └── ui/               # Reusable UI components
-├── lib/
-│   ├── fabric-utils.ts   # Fabric.js utilities
-│   ├── font-loader.ts    # Google Fonts loader
-│   └── i18n.ts           # Internationalization
-├── store/
-│   └── editorStore.ts    # Zustand store
-└── types/                # TypeScript types
-```
-
-## Deploy
-
-This project can be deployed to Vercel, Netlify, or any platform that supports Next.js.
-
-```bash
-# Deploy to Vercel
-npx vercel
-```
-
-## Known Limitations
-
-- Currently only supports solid color background covers, cannot automatically match complex textures or gradient backgrounds
-
-## TODO
-
-- [ ] Gradient background cover support
-- [ ] Texture/pattern background fill
-- [ ] AI-powered background inpainting
-- [ ] Batch processing for multiple images
-- [ ] Support more OCR engines (Tesseract, Google Vision, etc.)
-- [ ] Undo/Redo functionality
-- [ ] Custom font upload
-
-## Contributing
-
-Issues and Pull Requests are welcome!
-
-If you find this project helpful, please give it a Star!
-
-## License
-
-MIT License
-
----

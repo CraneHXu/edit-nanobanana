@@ -25,6 +25,7 @@ describe('AutoChangesPanel', () => {
     useI18n.setState({ locale: 'en' });
     const onRevert = vi.fn();
     const onMarkSeen = vi.fn();
+    const onConfirmAll = vi.fn();
 
     render(
       <AutoChangesPanel
@@ -40,6 +41,7 @@ describe('AutoChangesPanel', () => {
         ]}
         onRevert={onRevert}
         onMarkSeen={onMarkSeen}
+        onConfirmAll={onConfirmAll}
       />,
     );
 
@@ -47,14 +49,14 @@ describe('AutoChangesPanel', () => {
     expect(screen.getByText('Auto AI repair for region 7')).toBeInTheDocument();
     expect(screen.getByText('Older change')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Mark seen' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
     expect(onMarkSeen).toHaveBeenCalledWith('change-1');
 
-    fireEvent.click(screen.getAllByRole('button', { name: 'Revert' })[0]);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Discard' })[0]);
     expect(onRevert).toHaveBeenCalledWith('change-1');
   });
 
-  it('only shows mark seen for auto changes with explicit new status', () => {
+  it('only shows confirm for auto changes with explicit new status', () => {
     useI18n.setState({ locale: 'en' });
 
     render(
@@ -72,10 +74,37 @@ describe('AutoChangesPanel', () => {
         ]}
         onRevert={vi.fn()}
         onMarkSeen={vi.fn()}
+        onConfirmAll={vi.fn()}
       />,
     );
 
-    expect(screen.getAllByRole('button', { name: 'Mark seen' })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: 'Confirm' })).toHaveLength(1);
     expect(screen.getByText('Implicit status change')).toBeInTheDocument();
+  });
+
+  it('confirms all pending changes with one click', () => {
+    useI18n.setState({ locale: 'en' });
+    const onMarkSeen = vi.fn();
+
+    render(
+      <AutoChangesPanel
+        autoChanges={[
+          createAutoChange({ id: 'change-1', createdAt: Date.UTC(2026, 3, 3, 10, 0, 0), status: 'new' }),
+          createAutoChange({ id: 'change-2', patchId: 'patch-2', createdAt: Date.UTC(2026, 3, 3, 9, 0, 0), status: 'new' }),
+          createAutoChange({ id: 'change-3', patchId: 'patch-3', createdAt: Date.UTC(2026, 3, 3, 8, 0, 0), status: 'seen' }),
+        ]}
+        onRevert={vi.fn()}
+        onMarkSeen={onMarkSeen}
+        onConfirmAll={() => {
+          onMarkSeen('change-1');
+          onMarkSeen('change-2');
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm all' }));
+    expect(onMarkSeen).toHaveBeenCalledWith('change-1');
+    expect(onMarkSeen).toHaveBeenCalledWith('change-2');
+    expect(onMarkSeen).toHaveBeenCalledTimes(2);
   });
 });

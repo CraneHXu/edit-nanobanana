@@ -4,8 +4,15 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:local": "NEXT_PUBLIC_DEPLOY_TARGET=local next dev",
+    "dev:vercel": "NEXT_PUBLIC_DEPLOY_TARGET=vercel next dev",
     "build": "next build",
+    "build:local": "NEXT_PUBLIC_DEPLOY_TARGET=local next build",
+    "build:vercel": "NEXT_PUBLIC_DEPLOY_TARGET=vercel next build",
     "start": "next start",
+    "start:local": "NEXT_PUBLIC_DEPLOY_TARGET=local next start",
+    "start:vercel": "NEXT_PUBLIC_DEPLOY_TARGET=vercel next start",
+    "ai:start": "bash ./scripts/start-iopaint.sh",
     "lint": "next lint",
     "test": "vitest run"
   },

@@ -8,23 +8,140 @@ import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
 import { FontSelector } from './FontSelector';
 import { useEditorStore } from '@/store/editorStore';
+import { inpaintRegion, mergePatchIntoImage } from '@/lib/api-client';
+import { generateCleanBackground } from '@/lib/clean-background';
 import { sampleRegionStyle } from '@/lib/color-sampler';
+import { isAiEnabled } from '@/lib/deploy-target';
 import { rgbToHex, hexToRgb } from '@/lib/fabric-utils';
 import { fitTextLayoutToBox } from '@/lib/text-layout';
-import { RGBColor } from '@/types/ocr';
+import { BoundingBox, RGBColor } from '@/types/ocr';
 import { useI18n } from '@/lib/i18n';
+
+function clampBounds(bounds: BoundingBox, width: number, height: number): BoundingBox | null {
+  const x = Math.max(0, Math.floor(bounds.x));
+  const y = Math.max(0, Math.floor(bounds.y));
+  const right = Math.min(width, Math.ceil(bounds.x + bounds.width));
+  const bottom = Math.min(height, Math.ceil(bounds.y + bounds.height));
+
+  if (right <= x || bottom <= y) {
+    return null;
+  }
+
+  return {
+    x,
+    y,
+    width: right - x,
+    height: bottom - y,
+  };
+}
+
+async function loadImageElement(imageDataUrl: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Failed to load image'));
+    image.src = imageDataUrl;
+  });
+}
+
+async function cropImageAsset(
+  imageDataUrl: string,
+  bounds: BoundingBox,
+  fileName: string,
+): Promise<{ dataUrl: string; file: File }> {
+  const image = await loadImageElement(imageDataUrl);
+  const crop = clampBounds(bounds, image.width, image.height);
+  if (!crop) {
+    throw new Error('Selected region does not intersect the image bounds');
+  }
+
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(crop.width);
+  canvas.height = Math.round(crop.height);
+
+  const context = canvas.getContext('2d');
+  if (!context) {
+    throw new Error('Failed to create crop canvas context');
+  }
+
+  context.drawImage(
+    image,
+    crop.x,
+    crop.y,
+    crop.width,
+    crop.height,
+    0,
+    0,
+    crop.width,
+    crop.height,
+  );
+
+  const file = await new Promise<File>((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        reject(new Error('Failed to build crop blob'));
+        return;
+      }
+
+      resolve(new File([blob], fileName, { type: 'image/png' }));
+    }, 'image/png');
+  });
+
+  return {
+    dataUrl: canvas.toDataURL('image/png'),
+    file,
+  };
+}
+
+function patchesOverlap(regionIds: number[], patchRegionIds: number[]): boolean {
+  return regionIds.some((regionId) => patchRegionIds.includes(regionId));
+}
+
+async function composePendingPreviewLayer(
+  baseLayer: string,
+  pageModel: NonNullable<ReturnType<typeof useEditorStore.getState>['pageModel']>,
+  skipRegionIds: number[],
+): Promise<string> {
+  let nextLayer = baseLayer;
+  const pageSize = {
+    width: pageModel.originalWidth,
+    height: pageModel.originalHeight,
+  };
+
+  const pendingPatches = [...(pageModel.autoChanges ?? [])]
+    .sort((left, right) => left.createdAt - right.createdAt)
+    .map((change) => change.patch)
+    .filter((patch): patch is NonNullable<typeof patch> => (
+      !!patch?.imageDataUrl
+      && !!patch.crop
+      && !patchesOverlap(skipRegionIds, patch.regionIds)
+    ));
+
+  for (const patch of pendingPatches) {
+    nextLayer = await mergePatchIntoImage(nextLayer, patch.imageDataUrl!, patch.crop!, pageSize);
+  }
+
+  return nextLayer;
+}
 
 export function TextControls() {
   const {
     selectedElementId,
     pageModel,
     originalImage,
+    baseAutoLayer,
     updateElement,
     deleteElement,
     toggleShowText,
     resetElement,
+    applyPatch,
+    applyAutoPatch,
+    confirmAutoChange,
+    discardAutoChange,
+    setPreviewMode,
   } = useEditorStore();
   const { t } = useI18n();
+  const aiEnabled = isAiEnabled();
 
   const selectedElement = selectedElementId !== null
     ? pageModel?.regions.find((region) => region.id === selectedElementId && !region.removed) ?? null
@@ -36,6 +153,8 @@ export function TextControls() {
   const [localFontFamily, setLocalFontFamily] = useState('Noto Sans SC');
   const [localFontColor, setLocalFontColor] = useState<RGBColor>({ r: 0, g: 0, b: 0 });
   const [isResamplingColors, setIsResamplingColors] = useState(false);
+  const [repairMode, setRepairMode] = useState<'local-repair' | 'ai-repair' | null>(null);
+  const [pendingAutoChangeAction, setPendingAutoChangeAction] = useState<'confirm' | 'discard' | null>(null);
 
   useEffect(() => {
     if (!selectedElement) return;
@@ -54,6 +173,14 @@ export function TextControls() {
       </div>
     );
   }
+
+  // Some OCR imports omit `source`; the sidebar treats that as OCR, so TextControls should too.
+  const isOcrRegion = selectedElement.source == null || selectedElement.source === 'ocr' || selectedElement.source === 'roi_ocr';
+  const pendingAutoAiChange = aiEnabled ? (pageModel?.autoChanges ?? [])
+    .filter((change) => (change.status ?? 'seen') === 'new')
+    .filter((change) => change.patchKind === 'auto_ai')
+    .filter((change) => change.regionIds.includes(selectedElement.id))
+    .sort((left, right) => left.createdAt - right.createdAt)[0] ?? null : null;
 
   const handleTextChange = (newText: string) => {
     setLocalText(newText);
@@ -193,6 +320,135 @@ export function TextControls() {
     }
   };
 
+  const handleRepairRegion = async (action: 'local-repair' | 'ai-repair') => {
+    if (!selectedElement || !pageModel || !originalImage) {
+      return;
+    }
+
+    const pageSize = {
+      width: pageModel.originalWidth,
+      height: pageModel.originalHeight,
+    };
+    const confirmedBaseLayer = baseAutoLayer ?? pageModel.cleanLayer ?? originalImage;
+    const targetBounds = selectedElement.sourceBounds;
+    const createdAt = Date.now();
+
+    setRepairMode(action);
+    try {
+      if (action === 'local-repair') {
+        const cleanLayer = await generateCleanBackground(originalImage, pageModel);
+        useEditorStore.setState((state) => {
+          if (!state.pageModel) {
+            return state;
+          }
+
+          return {
+            pageModel: {
+              ...state.pageModel,
+              cleanLayer,
+            },
+          };
+        });
+
+        const patchAsset = await cropImageAsset(cleanLayer, targetBounds, `region-${selectedElement.id}-local-repair.png`);
+        const nextConfirmedLayer = await mergePatchIntoImage(confirmedBaseLayer, patchAsset.dataUrl, targetBounds, pageSize);
+        const nextLayer = await composePendingPreviewLayer(nextConfirmedLayer, pageModel, [selectedElement.id]);
+
+        applyPatch({
+          id: `local-clean-${selectedElement.id}-${createdAt}`,
+          kind: 'local_clean',
+          regionIds: [selectedElement.id],
+          roiId: `region-${selectedElement.id}`,
+          previewMode: 'current',
+          createdAt,
+          applied: true,
+          reverted: false,
+          description: `Local repair for region ${selectedElement.id}`,
+          crop: targetBounds,
+          imageDataUrl: patchAsset.dataUrl,
+        }, nextLayer);
+        setPreviewMode('current');
+        return;
+      }
+
+      const response = await inpaintRegion({
+        imageDataUrl: confirmedBaseLayer,
+        source: confirmedBaseLayer === originalImage ? 'original' : 'cleanLayer',
+        sourceBounds: targetBounds,
+        sourcePolygon: selectedElement.sourcePolygon,
+        pageSize,
+      });
+      const patchImage = response.patch ?? response.imageDataUrl;
+      const patchCrop = response.crop ?? targetBounds;
+      if (!patchImage) {
+        throw new Error('AI repair returned no patch image');
+      }
+
+      const previewBaseLayer = await composePendingPreviewLayer(confirmedBaseLayer, pageModel, [selectedElement.id]);
+      const nextLayer = await mergePatchIntoImage(previewBaseLayer, patchImage, patchCrop, pageSize);
+      const patchId = response.patchId ?? `auto-ai-${selectedElement.id}-${createdAt}`;
+      const patch = {
+        id: patchId,
+        kind: 'auto_ai' as const,
+        regionIds: [selectedElement.id],
+        crop: patchCrop,
+        imageDataUrl: patchImage,
+        roiId: `region-${selectedElement.id}`,
+        previewMode: 'current' as const,
+        createdAt,
+        applied: true,
+        reverted: false,
+        description: `AI repair for region ${selectedElement.id}`,
+      };
+
+      applyAutoPatch(patch, {
+        id: `change-${patchId}`,
+        patchId,
+        patchKind: patch.kind,
+        previewMode: patch.previewMode,
+        regionIds: patch.regionIds,
+        createdAt,
+        applied: true,
+        reverted: false,
+        description: patch.description,
+        status: 'new',
+        patch,
+      }, nextLayer);
+      setPreviewMode('current');
+    } catch (error) {
+      console.error('Failed to repair selected region:', error);
+      alert(`${action === 'ai-repair' ? 'AI repair' : 'Local repair'} failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setRepairMode(null);
+    }
+  };
+
+  const handleConfirmPendingAutoChange = async () => {
+    if (!pendingAutoAiChange) return;
+    setPendingAutoChangeAction('confirm');
+    try {
+      await confirmAutoChange(pendingAutoAiChange.id);
+    } catch (error) {
+      console.error('Failed to confirm auto change:', error);
+      alert(`${t('toolbar.confirmAutoChange')}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setPendingAutoChangeAction(null);
+    }
+  };
+
+  const handleDiscardPendingAutoChange = async () => {
+    if (!pendingAutoAiChange) return;
+    setPendingAutoChangeAction('discard');
+    try {
+      await discardAutoChange(pendingAutoAiChange.id);
+    } catch (error) {
+      console.error('Failed to discard auto change:', error);
+      alert(`${t('toolbar.discardAutoChange')}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setPendingAutoChangeAction(null);
+    }
+  };
+
   return (
     <div className="p-6 space-y-6">
       <div>
@@ -203,6 +459,68 @@ export function TextControls() {
           {t('controls.deleteRegionHint')}
         </p>
       </div>
+
+      {(pendingAutoAiChange || isOcrRegion) && (
+        <div
+          className="rounded-lg border bg-slate-50 p-3 space-y-3"
+          data-testid="textcontrols-top-actions"
+        >
+          {aiEnabled && pendingAutoAiChange && (
+            <div className="space-y-2">
+              <Label className="text-xs text-gray-500">{t('controls.pendingAiRepair')}</Label>
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  type="button"
+                  variant="default"
+                  onClick={() => {
+                    void handleConfirmPendingAutoChange();
+                  }}
+                  disabled={pendingAutoChangeAction !== null}
+                >
+                  {pendingAutoChangeAction === 'confirm' ? t('toolbar.refreshingCleanBackground') : t('toolbar.confirmAutoChange')}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    void handleDiscardPendingAutoChange();
+                  }}
+                  disabled={pendingAutoChangeAction !== null}
+                >
+                  {pendingAutoChangeAction === 'discard' ? t('toolbar.refreshingCleanBackground') : t('toolbar.discardAutoChange')}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {isOcrRegion && (
+            <div className={`grid gap-2 ${aiEnabled ? 'grid-cols-2' : 'grid-cols-1'}`}>
+              <Button
+                type="button"
+                variant="default"
+                onClick={() => {
+                  void handleRepairRegion('local-repair');
+                }}
+                disabled={!pageModel || repairMode !== null}
+              >
+                {repairMode === 'local-repair' ? t('toolbar.refreshingCleanBackground') : t('controls.localRepair')}
+              </Button>
+              {aiEnabled && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    void handleRepairRegion('ai-repair');
+                  }}
+                  disabled={!pageModel || repairMode !== null}
+                >
+                  {repairMode === 'ai-repair' ? t('toolbar.refreshingCleanBackground') : t('controls.aiRepair')}
+                </Button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="space-y-2">
         <Label>{t('controls.visibility')}</Label>

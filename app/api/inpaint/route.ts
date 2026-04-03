@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
+import { isAiEnabled } from '@/lib/deploy-target';
 
 export const runtime = 'nodejs';
 
@@ -121,6 +122,10 @@ async function forwardIopaintRequest(payload: InpaintRequest): Promise<InpaintRe
 
 export async function POST(request: NextRequest) {
   try {
+    if (!isAiEnabled()) {
+      return NextResponse.json({ error: 'AI is disabled for this deploy target' }, { status: 403 });
+    }
+
     const payload = await request.json() as InpaintRequest;
 
     if (!payload?.image || !payload?.mask || !payload?.crop || !payload?.pageSize) {
