@@ -2,7 +2,7 @@
 
 一个基于 Web 的图片文字编辑器。上传图片后会直接进入编辑页，自动执行 OCR、生成背景层，并在本地模式下对复杂区域渐进补充 AI 修复，让你直接在最终图层上编辑和导出。
 
-在线演示：<https://image-editor-web-tan.vercel.app/>
+在线演示：<https://edit-nanobanana.vercel.app/>
 
 ## 项目模式
 
