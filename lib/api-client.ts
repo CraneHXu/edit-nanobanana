@@ -23,6 +23,10 @@ interface PageSize {
   height: number;
 }
 
+const INPAINT_MIN_PADDING = 12;
+const INPAINT_MAX_PADDING = 48;
+const INPAINT_PADDING_RATIO = 0.25;
+
 async function scaleImageForOCR(file: File, targetHeight: number): Promise<ScaleResult> {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -87,7 +91,7 @@ interface ProgressCallback {
 
 export interface InpaintRequest {
   imageDataUrl: string;
-  source: 'original';
+  source: 'original' | 'cleanLayer';
   sourceBounds: BoundingBox;
   sourcePolygon?: [number, number][];
   pageSize: PageSize;
@@ -103,17 +107,30 @@ export interface InpaintResponse {
   latencyMs?: number;
 }
 
-function clampBounds(bounds: BoundingBox, pageSize: PageSize): BoundingBox {
-  const x = Math.max(0, Math.min(pageSize.width, bounds.x));
-  const y = Math.max(0, Math.min(pageSize.height, bounds.y));
-  const right = Math.max(x, Math.min(pageSize.width, bounds.x + bounds.width));
-  const bottom = Math.max(y, Math.min(pageSize.height, bounds.y + bounds.height));
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+export function expandInpaintCrop(bounds: BoundingBox, pageSize: PageSize): BoundingBox {
+  const padding = clamp(
+    Math.round(Math.max(bounds.width, bounds.height) * INPAINT_PADDING_RATIO),
+    INPAINT_MIN_PADDING,
+    INPAINT_MAX_PADDING,
+  );
+  const x = Math.max(0, Math.floor(bounds.x - padding));
+  const y = Math.max(0, Math.floor(bounds.y - padding));
+  const right = Math.min(pageSize.width, Math.ceil(bounds.x + bounds.width + padding));
+  const bottom = Math.min(pageSize.height, Math.ceil(bounds.y + bounds.height + padding));
+
+  if (right <= x || bottom <= y) {
+    throw new Error('Inpaint crop does not intersect page bounds');
+  }
 
   return {
     x,
     y,
-    width: Math.max(1, right - x),
-    height: Math.max(1, bottom - y),
+    width: right - x,
+    height: bottom - y,
   };
 }
 
@@ -218,6 +235,8 @@ async function buildMaskDataUrlForCrop(
   }
 
   context.clearRect(0, 0, canvas.width, canvas.height);
+  context.fillStyle = 'rgba(0,0,0,1)';
+  context.fillRect(0, 0, canvas.width, canvas.height);
   context.fillStyle = 'rgba(255,255,255,1)';
 
   if (region.sourcePolygon && region.sourcePolygon.length >= 3) {
@@ -373,7 +392,7 @@ export async function healthCheck(): Promise<{ status: string }> {
 }
 
 export async function inpaintRegion(request: InpaintRequest): Promise<InpaintResponse> {
-  const crop = clampBounds(request.sourceBounds, request.pageSize);
+  const crop = expandInpaintCrop(request.sourceBounds, request.pageSize);
   const [image, mask] = await Promise.all([
     cropImageDataUrl(request.imageDataUrl, crop),
     buildMaskDataUrlForCrop(crop, request),

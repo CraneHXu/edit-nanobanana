@@ -98,9 +98,10 @@ export function ImageUploader() {
         }
 
         const submittedRevision = useEditorStore.getState().autoAiRevision;
+        const baseLayerForApply = stateBeforeComplexity.currentLayer ?? stateBeforeComplexity.baseAutoLayer ?? imageUrl;
         const response = await inpaintRegion({
-          imageDataUrl: imageUrl,
-          source: 'original',
+          imageDataUrl: baseLayerForApply,
+          source: baseLayerForApply === imageUrl ? 'original' : 'cleanLayer',
           sourceBounds: candidate.sourceBounds,
           sourcePolygon: candidate.sourcePolygon,
           pageSize: {
@@ -128,7 +129,6 @@ export function ImageUploader() {
             throw new Error('Inpaint API returned no patch image');
           }
 
-          const baseLayerForApply = latestState.currentLayer ?? latestState.baseAutoLayer ?? imageUrl;
           const nextCurrentLayer = await mergePatchIntoImage(
             baseLayerForApply,
             patchImage,

@@ -168,13 +168,13 @@ export function Toolbar() {
   };
 
   return (
-    <div className="relative flex items-center justify-between border-b bg-white px-6 py-4">
-      <div>
+    <div className="relative flex flex-wrap items-start gap-4 border-b bg-white px-6 py-4 xl:flex-nowrap xl:items-center xl:justify-between">
+      <div className="min-w-0">
         <h1 className="text-2xl font-bold">{t('app.title')}</h1>
         <p className="text-sm text-gray-600">{t('app.subtitle')}</p>
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex max-w-full flex-wrap items-center gap-2 xl:justify-end">
         {/* Editor Mode Tools */}
         {originalImage && (
           <>

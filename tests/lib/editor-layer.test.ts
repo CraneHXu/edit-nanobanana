@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mergePatchIntoImage } from '@/lib/api-client';
 import { clampBounds } from '@/components/editor/CanvasEditor';
 import { buildRestoreOriginalPatch, composeCurrentLayer, resolvePreviewBackground } from '@/lib/editor-layer';
+import { generateCleanBackground } from '@/lib/clean-background';
 import { getRoiOverlapRegionIds, useEditorStore } from '@/store/editorStore';
 import type { AutoChange, ImagePatch, PageModel, TextElement } from '@/types/canvas';
 import type { OCRDetection } from '@/types/ocr';
@@ -18,6 +19,11 @@ vi.mock('@/lib/api-client', () => ({
   mergePatchIntoImage: vi.fn(async (baseImageDataUrl: string, patchDataUrl: string) => (
     `${baseImageDataUrl}>${patchDataUrl}`
   )),
+}));
+
+vi.mock('@/lib/clean-background', () => ({
+  generateCleanBackground: vi.fn(async () => 'clean-rebuilt'),
+  estimateRegionComplexity: vi.fn(async () => 0.5),
 }));
 
 const bounds = { x: 0, y: 0, width: 10, height: 4 };
@@ -159,6 +165,7 @@ describe('editor store history actions', () => {
   beforeEach(() => {
     useEditorStore.getState().reset();
     vi.mocked(mergePatchIntoImage).mockClear();
+    vi.mocked(generateCleanBackground).mockClear();
   });
 
   it('applyPatch supports undo/redo with async actions', async () => {
@@ -391,6 +398,67 @@ describe('editor store history actions', () => {
 
   it.todo('deleteElement applies restore_original patch for removed regions');
 
+  it('deleteElement invalidates only related auto-ai patches', async () => {
+    const firstPatch = createPatch({
+      id: 'auto-1',
+      kind: 'auto_ai',
+      regionIds: [1],
+      createdAt: 10,
+      imageDataUrl: 'patch-1',
+      crop: { x: 1, y: 2, width: 3, height: 4 },
+    });
+    const secondPatch = createPatch({
+      id: 'auto-2',
+      kind: 'auto_ai',
+      regionIds: [2],
+      createdAt: 20,
+      imageDataUrl: 'patch-2',
+      crop: { x: 5, y: 6, width: 7, height: 8 },
+    });
+    const pageModel = {
+      ...createPageModel(),
+      regions: [
+        createRegion({ id: 1 }),
+        createRegion({
+          id: 2,
+          sourceBounds: { x: 12, y: 12, width: 18, height: 10 },
+          bbox: { x: 12, y: 12, width: 18, height: 10 },
+          original: {
+            bbox: { x: 12, y: 12, width: 18, height: 10 },
+          },
+        }),
+      ],
+      patches: [firstPatch, secondPatch],
+      autoChanges: [
+        { ...createAutoChange(firstPatch), status: 'new' as const },
+        { ...createAutoChange(secondPatch), status: 'seen' as const },
+      ],
+    };
+
+    useEditorStore.setState({
+      originalImage: 'original',
+      pageModel,
+      baseAutoLayer: 'auto-base',
+      currentLayer: 'auto-current',
+      historyPast: [],
+      historyFuture: [],
+      selectedElementId: 1,
+    });
+
+    await useEditorStore.getState().deleteElement(1);
+
+    expect(
+      (useEditorStore.getState().pageModel?.patches ?? [])
+        .filter((patch) => patch.applied && !patch.reverted)
+        .map((patch) => patch.id),
+    ).toEqual(['auto-2']);
+    expect(
+      (useEditorStore.getState().pageModel?.autoChanges ?? [])
+        .filter((change) => change.applied && !change.reverted)
+        .map((change) => change.patchId),
+    ).toEqual(['auto-2']);
+  });
+
   it('getRoiOverlapRegionIds excludes manual regions from ROI overlap matching', () => {
     const regions = [
       createRegion({ id: 1, source: 'ocr', sourceBounds: { x: 10, y: 10, width: 20, height: 12 } }),
@@ -401,7 +469,7 @@ describe('editor store history actions', () => {
     expect(getRoiOverlapRegionIds(regions, { x: 8, y: 8, width: 30, height: 20 })).toEqual([1]);
   });
 
-  it('mergeRoiDetections only removes overlapping non-manual regions', () => {
+  it('mergeRoiDetections only removes overlapping non-manual regions', async () => {
     const manualRegion = createRegion({
       id: 2,
       source: 'manual',
@@ -434,6 +502,7 @@ describe('editor store history actions', () => {
     };
 
     useEditorStore.setState({
+      originalImage: 'original',
       pageModel,
       nextRegionId: 3,
       historyPast: [],
@@ -441,12 +510,48 @@ describe('editor store history actions', () => {
       selectedElementId: 1,
     });
 
-    useEditorStore.getState().mergeRoiDetections({ x: 8, y: 8, width: 30, height: 20 }, [detection]);
+    await useEditorStore.getState().mergeRoiDetections({ x: 8, y: 8, width: 30, height: 20 }, [detection]);
 
     const regions = useEditorStore.getState().pageModel?.regions ?? [];
     expect(regions.find((region) => region.id === 1)?.removed).toBe(true);
     expect(regions.find((region) => region.id === 2)?.removed).toBe(false);
     expect(regions.find((region) => region.id === 3)?.source).toBe('roi_ocr');
+  });
+
+  it('mergeRoiDetections rebuilds clean/base/current layers after ROI OCR replacement', async () => {
+    const pageModel = createPageModel();
+    const detection: OCRDetection = {
+      index: 0,
+      text: 'ROI',
+      confidence: 0.96,
+      bbox: [
+        [1, 1],
+        [11, 1],
+        [11, 7],
+        [1, 7],
+      ],
+      bounds: { x: 1, y: 1, width: 10, height: 6 },
+      textColor: { r: 0, g: 0, b: 0 },
+      bgColor: { r: 255, g: 255, b: 255 },
+    };
+
+    useEditorStore.setState({
+      originalImage: 'original',
+      pageModel,
+      baseAutoLayer: 'clean-0',
+      currentLayer: 'clean-0',
+      historyPast: [],
+      historyFuture: [],
+      nextRegionId: 2,
+      selectedElementId: 1,
+    });
+
+    await useEditorStore.getState().mergeRoiDetections({ x: 8, y: 8, width: 30, height: 20 }, [detection]);
+
+    expect(vi.mocked(generateCleanBackground)).toHaveBeenCalledTimes(1);
+    expect(useEditorStore.getState().pageModel?.cleanLayer).toBe('clean-rebuilt');
+    expect(useEditorStore.getState().baseAutoLayer).toBe('clean-rebuilt');
+    expect(useEditorStore.getState().currentLayer).toBe('clean-rebuilt');
   });
 });
 

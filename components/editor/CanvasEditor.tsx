@@ -390,7 +390,7 @@ export function CanvasEditor() {
         const crop = await cropImageAsset(state.originalImage, roiBounds, 'roi-ocr.png');
         const response = await detectText(crop.file);
         const detections = await enhanceDetectionsWithStyles(response.detections, crop.dataUrl);
-        mergeRoiDetections(roiBounds, detections);
+        await mergeRoiDetections(roiBounds, detections);
       } catch (error) {
         console.error('ROI OCR failed:', error);
         alert(`ROI OCR failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -426,8 +426,8 @@ export function CanvasEditor() {
       }
 
       const response = await inpaintRegion({
-        imageDataUrl: state.originalImage,
-        source: 'original',
+        imageDataUrl: baseLayer,
+        source: baseLayer === state.originalImage ? 'original' : 'cleanLayer',
         sourceBounds: roiBounds,
         pageSize,
       });

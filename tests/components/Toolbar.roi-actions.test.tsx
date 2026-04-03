@@ -160,4 +160,22 @@ describe('Toolbar ROI actions', () => {
 
     expect(screen.getByRole('button', { name: /Auto changes/ })).toHaveTextContent('Auto changes1');
   });
+
+  it('allows toolbar controls to wrap instead of forcing horizontal overflow', async () => {
+    let container: HTMLElement | null = null;
+    await act(async () => {
+      useEditorStore.setState({
+        originalImage: 'data:image/png;base64,original',
+        pageModel: createPageModel(),
+      });
+
+      container = render(<Toolbar />).container;
+    });
+
+    const root = container?.firstElementChild as HTMLElement | null;
+    expect(root?.className).toContain('flex-wrap');
+
+    const rightControls = root?.querySelector('.flex.items-center.gap-2') as HTMLElement | null;
+    expect(rightControls?.className).toContain('flex-wrap');
+  });
 });

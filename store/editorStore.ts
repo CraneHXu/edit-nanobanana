@@ -4,8 +4,8 @@
 
 import { create } from 'zustand';
 import { mergePatchIntoImage } from '@/lib/api-client';
+import { generateCleanBackground } from '@/lib/clean-background';
 import { applyPageMutation, createManualTextElement, PageMutation } from '@/lib/editor-mutations';
-import { buildRestoreOriginalPatch } from '@/lib/editor-layer';
 import { estimateFontSizeToBox } from '@/lib/text-layout';
 import { BoundingBox, OCRDetection } from '@/types/ocr';
 import { AutoChange, ImagePatch, PageModel, PreviewMode, TextElement } from '@/types/canvas';
@@ -58,7 +58,7 @@ interface EditorState {
   updateElement: (id: number, updates: Partial<TextElement>) => void;
   replaceElements: (elements: TextElement[]) => void;
   addManualElement: (bounds: BoundingBox) => number | null;
-  mergeRoiDetections: (roiBounds: BoundingBox, detections: OCRDetection[]) => void;
+  mergeRoiDetections: (roiBounds: BoundingBox, detections: OCRDetection[]) => Promise<void>;
   deleteElement: (id: number) => Promise<void>;
   toggleShowText: (id: number) => void;
   resetElement: (id: number) => void;
@@ -395,6 +395,47 @@ function applyLayerState(pageModel: PageModel, layerState: LayerHistoryState): P
   };
 }
 
+async function rebuildLayerStateFromPageModel(
+  originalImage: string,
+  pageModel: PageModel,
+): Promise<LayerHistoryState> {
+  const cleanLayer = await generateCleanBackground(originalImage, pageModel);
+  const pageSize = {
+    width: pageModel.originalWidth,
+    height: pageModel.originalHeight,
+  };
+
+  let currentLayer = cleanLayer;
+  const activeAutoPatches = (pageModel.patches ?? [])
+    .filter((patch) => patch.kind === 'auto_ai')
+    .filter((patch) => patch.applied && !patch.reverted)
+    .sort((a, b) => a.createdAt - b.createdAt);
+
+  for (const patch of activeAutoPatches) {
+    if (!patch.imageDataUrl || !patch.crop) {
+      throw new Error(`Auto patch ${patch.id} is missing layer asset data`);
+    }
+    currentLayer = await mergePatchIntoImage(currentLayer, patch.imageDataUrl, patch.crop, pageSize);
+  }
+
+  return {
+    cleanLayer,
+    baseAutoLayer: cleanLayer,
+    currentLayer,
+  };
+}
+
+function getRelatedAutoPatches(pageModel: PageModel, regionIds: number[]): Array<{ patch: ImagePatch; autoChange?: AutoChange }> {
+  const relatedPatches = (pageModel.patches ?? [])
+    .filter((patch) => patch.kind === 'auto_ai')
+    .filter((patch) => patch.regionIds.some((regionId) => regionIds.includes(regionId)));
+
+  return relatedPatches.map((patch) => ({
+    patch,
+    autoChange: pageModel.autoChanges?.find((change) => change.patchId === patch.id),
+  }));
+}
+
 function shiftDetectionToPage(
   detection: OCRDetection,
   offsetX: number,
@@ -634,10 +675,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     return element.id;
   },
 
-  mergeRoiDetections: (roiBounds: BoundingBox, detections: OCRDetection[]) => {
+  mergeRoiDetections: async (roiBounds: BoundingBox, detections: OCRDetection[]) => {
     const state = get();
     const { pageModel, historyPast, nextRegionId, selectedElementId } = state;
-    if (!pageModel) {
+    if (!pageModel || !state.originalImage) {
       return;
     }
 
@@ -674,12 +715,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const nextSelectedElementId = nextRegions[0]?.id ?? nextActiveRegions[0]?.id ?? null;
     const nextRevision = get().autoAiRevision + 1;
     const previousLayerState = captureInvalidatedAutoLayerState(state);
-    const nextLayerState = createClearedLayerState();
+    const nextLayerState = await rebuildLayerStateFromPageModel(state.originalImage, nextPageModel);
 
     set({
       pageModel: applyLayerState(nextPageModel, nextLayerState),
-      baseAutoLayer: null,
-      currentLayer: null,
+      baseAutoLayer: nextLayerState.baseAutoLayer,
+      currentLayer: nextLayerState.currentLayer,
       selectedElementId: nextSelectedElementId,
       editorMode: 'select',
       pendingRoiAction: null,
@@ -704,29 +745,35 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   deleteElement: async (id: number) => {
     const state = get();
     const { pageModel, historyPast, selectedElementId } = state;
-    if (!pageModel) return;
+    if (!pageModel || !state.originalImage) return;
 
-    const patch = buildRestoreOriginalPatch({ regionIds: [id] });
+    const relatedAutoEntries = getRelatedAutoPatches(pageModel, [id]);
     const redo: PageMutation[] = [
+      ...relatedAutoEntries.map(({ patch, autoChange }) => ({
+        type: 'revert-patch' as const,
+        patchId: patch.id,
+        autoChangeId: autoChange?.id,
+      })),
       { type: 'remove-region', regionId: id },
-      { type: 'apply-patch', patch },
     ];
     const undo: PageMutation[] = [
       { type: 'restore-region', regionId: id },
-      { type: 'revert-patch', patchId: patch.id },
+      ...relatedAutoEntries.map(({ patch, autoChange }) => ({
+        type: 'apply-patch' as const,
+        patch,
+        autoChange,
+      })),
     ];
-    const nextPageModel = applyMutations(invalidateAutoChanges(pageModel), redo);
+    const nextPageModel = applyMutations(pageModel, redo);
     const nextSelected = getActiveRegions(nextPageModel.regions).find((region) => region.id !== id)?.id ?? null;
     const nextRevision = get().autoAiRevision + 1;
-    const previousLayerState = patch.kind === 'auto_ai'
-      ? captureLayerState(state)
-      : captureInvalidatedAutoLayerState(state);
-    const nextLayerState = createClearedLayerState();
+    const previousLayerState = captureLayerState(state);
+    const nextLayerState = await rebuildLayerStateFromPageModel(state.originalImage, nextPageModel);
 
     set({
       pageModel: applyLayerState(nextPageModel, nextLayerState),
-      baseAutoLayer: null,
-      currentLayer: null,
+      baseAutoLayer: nextLayerState.baseAutoLayer,
+      currentLayer: nextLayerState.currentLayer,
       selectedElementId: nextSelected,
       previewMode: 'current',
       historyPast: [
