@@ -61,8 +61,19 @@ export function deserializeEditorSession(raw: string | null): DeserializedEditor
     if (!payload || typeof payload.originalImage !== 'string' || !payload.imageMeta || !payload.pageModel) {
       return null;
     }
+    if (
+      typeof payload.imageMeta.width !== 'number'
+      || !Number.isFinite(payload.imageMeta.width)
+      || typeof payload.imageMeta.height !== 'number'
+      || !Number.isFinite(payload.imageMeta.height)
+    ) {
+      return null;
+    }
 
     const storedPageModel = payload.pageModel as StoredPageModel;
+    if (!Array.isArray(storedPageModel.regions)) {
+      return null;
+    }
     const {
       baseAutoLayer: storedBaseAutoLayer = null,
       currentLayer: storedCurrentLayer = null,

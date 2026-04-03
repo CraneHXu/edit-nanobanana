@@ -45,21 +45,28 @@ export default function Home() {
       return;
     }
 
-    const payload = deserializeEditorSession(raw);
-    if (!payload) {
-      markSessionHydrated();
-      return;
-    }
+    try {
+      const payload = deserializeEditorSession(raw);
+      if (!payload) {
+        window.localStorage.removeItem(SESSION_STORAGE_KEY);
+        markSessionHydrated();
+        return;
+      }
 
-    hydrateSession({
-      originalImage: payload.originalImage,
-      imageMeta: payload.imageMeta,
-      pageModel: payload.pageModel,
-    });
-    useEditorStore.setState({
-      baseAutoLayer: payload.baseAutoLayer,
-      currentLayer: payload.currentLayer,
-    });
+      hydrateSession({
+        originalImage: payload.originalImage,
+        imageMeta: payload.imageMeta,
+        pageModel: payload.pageModel,
+      });
+      useEditorStore.setState({
+        baseAutoLayer: payload.baseAutoLayer,
+        currentLayer: payload.currentLayer,
+      });
+    } catch (error) {
+      console.error('Failed to restore editor session:', error);
+      window.localStorage.removeItem(SESSION_STORAGE_KEY);
+      markSessionHydrated();
+    }
   }, [hydrateSession, markSessionHydrated, sessionHydrated]);
 
   useEffect(() => {
