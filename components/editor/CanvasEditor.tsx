@@ -82,16 +82,6 @@ function normalizeDraftBox(start: { x: number; y: number }, end: { x: number; y:
   };
 }
 
-function resolveAutoChangeStatus(change: AutoChange): 'new' | 'seen' | 'reverted' {
-  if (change.status) {
-    return change.status;
-  }
-  if (change.reverted) {
-    return 'reverted';
-  }
-  return change.applied ? 'new' : 'seen';
-}
-
 function toImageBounds(draftBox: DraftBox, scale: number): BoundingBox {
   return {
     x: roundToImagePixel(draftBox.x / scale),
@@ -211,6 +201,8 @@ export function CanvasEditor() {
     eraserSize,
     isComparing,
     previewMode,
+    baseAutoLayer,
+    currentLayer,
     viewportZoom,
     setViewportZoom,
     setEditorMode,
@@ -285,8 +277,8 @@ export function CanvasEditor() {
       : resolvePreviewBackground({
           previewMode,
           originalImage,
-          baseAutoLayer: pageModel?.cleanLayer ?? useEditorStore.getState().baseAutoLayer,
-          currentLayer: useEditorStore.getState().currentLayer,
+          baseAutoLayer: pageModel?.cleanLayer ?? baseAutoLayer,
+          currentLayer,
         }) ?? originalImage;
 
     fabricModule.FabricImage.fromURL(backgroundSource)
@@ -325,7 +317,7 @@ export function CanvasEditor() {
       .catch((error) => {
         console.error('Failed to load background image:', error);
       });
-  }, [fabricReady, isComparing, originalImage, pageModel?.cleanLayer, previewMode, setCanvasScale]);
+  }, [baseAutoLayer, currentLayer, fabricReady, isComparing, originalImage, pageModel?.cleanLayer, previewMode, setCanvasScale]);
 
   const commitTextboxToModel = useCallback((elementId: number) => {
     if (suppressCanvasWritebackRef.current) return;
@@ -788,7 +780,7 @@ export function CanvasEditor() {
 
   const autoChangedRegionIds = new Set(
     (pageModel?.autoChanges ?? [])
-      .filter((change) => resolveAutoChangeStatus(change) === 'new')
+      .filter((change) => change.status === 'new')
       .flatMap((change) => change.regionIds),
   );
   const highlightedRegions = (pageModel?.regions ?? []).filter((region) => (

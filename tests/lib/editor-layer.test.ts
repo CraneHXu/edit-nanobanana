@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mergePatchIntoImage } from '@/lib/api-client';
 import { clampBounds } from '@/components/editor/CanvasEditor';
 import { buildRestoreOriginalPatch, composeCurrentLayer, resolvePreviewBackground } from '@/lib/editor-layer';
 import { getRoiOverlapRegionIds, useEditorStore } from '@/store/editorStore';
@@ -9,6 +10,14 @@ import type { OCRDetection } from '@/types/ocr';
 
 vi.mock('@/lib/text-layout', () => ({
   estimateFontSizeToBox: () => 12,
+}));
+
+vi.mock('@/lib/api-client', () => ({
+  detectText: vi.fn(),
+  inpaintRegion: vi.fn(),
+  mergePatchIntoImage: vi.fn(async (baseImageDataUrl: string, patchDataUrl: string) => (
+    `${baseImageDataUrl}>${patchDataUrl}`
+  )),
 }));
 
 const bounds = { x: 0, y: 0, width: 10, height: 4 };
@@ -87,6 +96,8 @@ function createPatch(overrides: Partial<ImagePatch> = {}): ImagePatch {
     previewMode: overrides.previewMode,
     roiId: overrides.roiId,
     description: overrides.description,
+    crop: overrides.crop,
+    imageDataUrl: overrides.imageDataUrl,
   };
 }
 
@@ -147,6 +158,7 @@ describe('editor layer helpers', () => {
 describe('editor store history actions', () => {
   beforeEach(() => {
     useEditorStore.getState().reset();
+    vi.mocked(mergePatchIntoImage).mockClear();
   });
 
   it('applyPatch supports undo/redo with async actions', async () => {
@@ -225,6 +237,56 @@ describe('editor store history actions', () => {
 
     await useEditorStore.getState().redo();
     expect(useEditorStore.getState().currentLayer).toBe('current-1');
+  });
+
+  it('revertAutoChange recomputes current layer from baseAutoLayer and remaining auto patches', async () => {
+    const pageModel = createPageModel();
+    const firstPatch = createPatch({
+      id: 'auto-1',
+      kind: 'auto_ai',
+      createdAt: 10,
+      imageDataUrl: 'patch-1',
+      crop: { x: 1, y: 2, width: 3, height: 4 },
+    });
+    const secondPatch = createPatch({
+      id: 'auto-2',
+      kind: 'auto_ai',
+      createdAt: 20,
+      imageDataUrl: 'patch-2',
+      crop: { x: 5, y: 6, width: 7, height: 8 },
+    });
+    const firstChange = { ...createAutoChange(firstPatch), status: 'new' as const };
+    const secondChange = { ...createAutoChange(secondPatch), status: 'seen' as const };
+
+    useEditorStore.setState({
+      pageModel: {
+        ...pageModel,
+        patches: [firstPatch, secondPatch],
+        autoChanges: [firstChange, secondChange],
+      },
+      baseAutoLayer: 'clean-0',
+      currentLayer: 'clean-0>patch-1>patch-2',
+    });
+
+    await useEditorStore.getState().revertAutoChange(firstChange.id);
+
+    expect(useEditorStore.getState().currentLayer).toBe('clean-0>patch-2');
+    expect(useEditorStore.getState().pageModel?.patches?.find((patch) => patch.id === firstPatch.id)).toMatchObject({
+      applied: false,
+      reverted: true,
+    });
+    expect(useEditorStore.getState().pageModel?.autoChanges?.find((change) => change.id === firstChange.id)).toMatchObject({
+      applied: false,
+      reverted: true,
+      status: 'reverted',
+    });
+    expect(vi.mocked(mergePatchIntoImage)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(mergePatchIntoImage)).toHaveBeenCalledWith(
+      'clean-0',
+      'patch-2',
+      { x: 5, y: 6, width: 7, height: 8 },
+      { width: 100, height: 100 },
+    );
   });
 
   it('reset clears sessionHydrated and restores current preview mode', () => {

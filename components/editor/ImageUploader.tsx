@@ -10,6 +10,7 @@ import { enhanceDetectionsWithStyles } from '@/lib/color-sampler';
 import { estimateRegionComplexity, generateCleanBackground } from '@/lib/clean-background';
 import { useI18n } from '@/lib/i18n';
 import type { AutoChange, ImagePatch, TextElement } from '@/types/canvas';
+import type { BoundingBox } from '@/types/ocr';
 
 function isAutoRepairRegion(region: TextElement | undefined): region is TextElement {
   if (!region || region.removed || region.excludedFromClean) {
@@ -20,7 +21,13 @@ function isAutoRepairRegion(region: TextElement | undefined): region is TextElem
   return source === 'ocr' || source === 'roi_ocr';
 }
 
-function buildAutoAiEntry(regionId: number, patchId: string, createdAt: number): {
+function buildAutoAiEntry(
+  regionId: number,
+  patchId: string,
+  createdAt: number,
+  crop: BoundingBox,
+  imageDataUrl: string,
+): {
   patch: ImagePatch;
   autoChange: AutoChange;
 } {
@@ -28,6 +35,8 @@ function buildAutoAiEntry(regionId: number, patchId: string, createdAt: number):
     id: patchId,
     kind: 'auto_ai',
     regionIds: [regionId],
+    crop,
+    imageDataUrl,
     previewMode: 'current',
     createdAt,
     applied: true,
@@ -47,6 +56,7 @@ function buildAutoAiEntry(regionId: number, patchId: string, createdAt: number):
       applied: true,
       reverted: false,
       description: patch.description,
+      status: 'new',
     },
   };
 }
@@ -136,8 +146,14 @@ export function ImageUploader() {
 
           const createdAt = Date.now();
           const patchId = response.patchId ?? `auto-ai-${candidate.regionId}-${createdAt}`;
-          const { patch, autoChange } = buildAutoAiEntry(candidate.regionId, patchId, createdAt);
-          applyAutoPatch(patch, autoChange);
+          const { patch, autoChange } = buildAutoAiEntry(
+            candidate.regionId,
+            patchId,
+            createdAt,
+            patchCrop,
+            patchImage,
+          );
+          applyAutoPatch(patch, autoChange, nextCurrentLayer);
           useEditorStore.getState().setCurrentLayer(nextCurrentLayer);
         } catch (error) {
           console.error(`Failed to auto repair region ${candidate.regionId}:`, error);

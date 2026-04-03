@@ -3,6 +3,7 @@
  */
 
 import { create } from 'zustand';
+import { mergePatchIntoImage } from '@/lib/api-client';
 import { applyPageMutation, createManualTextElement, PageMutation } from '@/lib/editor-mutations';
 import { buildRestoreOriginalPatch } from '@/lib/editor-layer';
 import { estimateFontSizeToBox } from '@/lib/text-layout';
@@ -75,6 +76,7 @@ interface EditorState {
   setCurrentLayer: (layer: string | null) => void;
   applyPatch: (patch: ImagePatch, nextLayer?: string | null) => void;
   applyAutoPatch: (patch: ImagePatch, autoChange: AutoChange, nextLayer?: string | null) => void;
+  revertAutoChange: (changeId: string) => Promise<void>;
   undo: () => Promise<void>;
   redo: () => Promise<void>;
   reset: () => void;
@@ -311,6 +313,31 @@ function applyMutations(pageModel: PageModel, mutations: PageMutation[]): PageMo
 
 function deriveNextRegionId(regions: TextElement[]): number {
   return regions.reduce((maxId, region) => Math.max(maxId, region.id), 0) + 1;
+}
+
+function updateAutoChange(
+  pageModel: PageModel,
+  changeId: string,
+  updater: (change: AutoChange) => AutoChange,
+): PageModel {
+  const nextAutoChanges = pageModel.autoChanges?.map((change) => (
+    change.id === changeId ? updater(change) : change
+  ));
+
+  const targetChange = pageModel.autoChanges?.find((change) => change.id === changeId);
+  const nextPatches = targetChange
+    ? pageModel.patches?.map((patch) => (
+        patch.id === targetChange.patchId
+          ? { ...patch, applied: false, reverted: true }
+          : patch
+      ))
+    : pageModel.patches;
+
+  return {
+    ...pageModel,
+    autoChanges: nextAutoChanges,
+    patches: nextPatches,
+  };
 }
 
 function intersectsBoundingBox(a: BoundingBox, b: BoundingBox): boolean {
@@ -782,6 +809,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   setCleanLayer: (cleanLayer: string | null) => {
     const { pageModel, previewMode } = get();
     if (!pageModel) return;
+    const nextRevision = get().autoAiRevision + 1;
 
     set({
       pageModel: applyLayerState(pageModel, {
@@ -792,6 +820,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       baseAutoLayer: cleanLayer,
       currentLayer: cleanLayer,
       previewMode: cleanLayer ? previewMode : 'current',
+      autoAiRevision: nextRevision,
     });
   },
   setBaseAutoLayer: (layer: string | null) => set({ baseAutoLayer: layer }),
@@ -848,6 +877,55 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       historyPast: [...historyPast, { redo, undo, previousLayerState: nextLayerState ? previousLayerState : undefined, nextLayerState }],
       historyFuture: [],
       autoAiRevision: nextRevision,
+    });
+  },
+  revertAutoChange: async (changeId: string) => {
+    const state = get();
+    if (!state.pageModel) return;
+    const submittedRevision = state.autoAiRevision + 1;
+    set({ autoAiRevision: submittedRevision });
+
+    const nextPageModel = updateAutoChange(state.pageModel, changeId, (change) => ({
+      ...change,
+      applied: false,
+      reverted: true,
+      status: 'reverted',
+    }));
+
+    const baseLayer = state.baseAutoLayer ?? nextPageModel.cleanLayer ?? state.originalImage;
+    if (!baseLayer) {
+      if (get().autoAiRevision !== submittedRevision) {
+        return;
+      }
+      set({ pageModel: nextPageModel, currentLayer: null, autoAiRevision: submittedRevision });
+      return;
+    }
+
+    const pageSize = {
+      width: nextPageModel.originalWidth,
+      height: nextPageModel.originalHeight,
+    };
+
+    const activeAutoPatches = (nextPageModel.patches ?? [])
+      .filter((patch) => patch.kind === 'auto_ai')
+      .filter((patch) => patch.applied && !patch.reverted);
+
+    let nextCurrentLayer = baseLayer;
+    for (const patch of activeAutoPatches.sort((a, b) => a.createdAt - b.createdAt)) {
+      if (!patch.imageDataUrl || !patch.crop) {
+        throw new Error(`Auto patch ${patch.id} is missing layer asset data`);
+      }
+      nextCurrentLayer = await mergePatchIntoImage(nextCurrentLayer, patch.imageDataUrl, patch.crop, pageSize);
+    }
+
+    if (get().autoAiRevision !== submittedRevision) {
+      return;
+    }
+
+    set({
+      pageModel: nextPageModel,
+      currentLayer: nextCurrentLayer,
+      autoAiRevision: submittedRevision,
     });
   },
   undo: async () => {

@@ -122,4 +122,42 @@ describe('Toolbar ROI actions', () => {
     expect(screen.getByRole('button', { name: 'Add text mode' })).toBeInTheDocument();
     expect(consoleErrorSpy.mock.calls.map((args) => args.join(' ')).join('\n')).not.toContain('not wrapped in act');
   });
+
+  it('counts unseen auto changes from explicit new status only', async () => {
+    await act(async () => {
+      useEditorStore.setState({
+        originalImage: 'data:image/png;base64,original',
+        pageModel: {
+          ...createPageModel(),
+          autoChanges: [
+            {
+              id: 'change-new',
+              patchId: 'patch-new',
+              patchKind: 'auto_ai',
+              regionIds: [1],
+              createdAt: 1,
+              applied: true,
+              reverted: false,
+              status: 'new',
+              description: 'New change',
+            },
+            {
+              id: 'change-implicit',
+              patchId: 'patch-implicit',
+              patchKind: 'auto_ai',
+              regionIds: [1],
+              createdAt: 2,
+              applied: true,
+              reverted: false,
+              description: 'Implicit change',
+            },
+          ],
+        },
+      });
+
+      render(<Toolbar />);
+    });
+
+    expect(screen.getByRole('button', { name: /Auto changes/ })).toHaveTextContent('Auto changes1');
+  });
 });

@@ -13,16 +13,6 @@ interface AutoChangesPanelProps {
 
 type Translate = ReturnType<(typeof useI18n)['getState']>['t'];
 
-function resolveAutoChangeStatus(change: AutoChange): 'new' | 'seen' | 'reverted' {
-  if (change.status) {
-    return change.status;
-  }
-  if (change.reverted) {
-    return 'reverted';
-  }
-  return change.applied ? 'new' : 'seen';
-}
-
 function formatTimestamp(createdAt: number): string {
   return new Intl.DateTimeFormat(undefined, {
     month: 'short',
@@ -76,7 +66,7 @@ export function AutoChangesPanel({ autoChanges, onRevert, onMarkSeen }: AutoChan
       ) : (
         <div className="space-y-2">
           {recentChanges.map((change) => {
-            const status = resolveAutoChangeStatus(change);
+            const status = change.status ?? 'seen';
             return (
               <div key={change.id} className="rounded-md border border-slate-200 px-3 py-2">
                 <div className="mb-2 flex items-start justify-between gap-2">

@@ -16,7 +16,7 @@ function createAutoChange(overrides: Partial<AutoChange> = {}): AutoChange {
     applied: overrides.applied ?? true,
     reverted: overrides.reverted ?? false,
     description: overrides.description ?? 'Auto AI repair for region 7',
-    status: overrides.status ?? 'new',
+    status: Object.prototype.hasOwnProperty.call(overrides, 'status') ? overrides.status : 'new',
   };
 }
 
@@ -52,5 +52,30 @@ describe('AutoChangesPanel', () => {
 
     fireEvent.click(screen.getAllByRole('button', { name: 'Revert' })[0]);
     expect(onRevert).toHaveBeenCalledWith('change-1');
+  });
+
+  it('only shows mark seen for auto changes with explicit new status', () => {
+    useI18n.setState({ locale: 'en' });
+
+    render(
+      <AutoChangesPanel
+        autoChanges={[
+          createAutoChange({ id: 'change-new', status: 'new' }),
+          createAutoChange({
+            id: 'change-implicit',
+            patchId: 'patch-implicit',
+            status: undefined,
+            applied: true,
+            reverted: false,
+            description: 'Implicit status change',
+          }),
+        ]}
+        onRevert={vi.fn()}
+        onMarkSeen={vi.fn()}
+      />,
+    );
+
+    expect(screen.getAllByRole('button', { name: 'Mark seen' })).toHaveLength(1);
+    expect(screen.getByText('Implicit status change')).toBeInTheDocument();
   });
 });

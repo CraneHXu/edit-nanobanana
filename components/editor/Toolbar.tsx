@@ -9,7 +9,7 @@ import { exportCanvasAsPNG } from '@/lib/fabric-utils';
 import { useI18n, Locale } from '@/lib/i18n';
 import { generateCleanBackground } from '@/lib/clean-background';
 import { AutoChangesPanel } from '@/components/editor/AutoChangesPanel';
-import type { AutoChange, PageModel } from '@/types/canvas';
+import type { AutoChange } from '@/types/canvas';
 import {
   Select,
   SelectContent,
@@ -17,41 +17,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-
-function resolveAutoChangeStatus(change: AutoChange): 'new' | 'seen' | 'reverted' {
-  if (change.status) {
-    return change.status;
-  }
-  if (change.reverted) {
-    return 'reverted';
-  }
-  return change.applied ? 'new' : 'seen';
-}
-
-function updatePageModelAutoChanges(
-  pageModel: PageModel,
-  changeId: string,
-  updater: (change: AutoChange) => AutoChange,
-): PageModel {
-  const nextAutoChanges = pageModel.autoChanges?.map((change) => (
-    change.id === changeId ? updater(change) : change
-  ));
-
-  const targetChange = pageModel.autoChanges?.find((change) => change.id === changeId);
-  const nextPatches = targetChange
-    ? pageModel.patches?.map((patch) => (
-        patch.id === targetChange.patchId
-          ? { ...patch, applied: false, reverted: true }
-          : patch
-      ))
-    : pageModel.patches;
-
-  return {
-    ...pageModel,
-    autoChanges: nextAutoChanges,
-    patches: nextPatches,
-  };
-}
 
 export function Toolbar() {
   const [isAutoChangesOpen, setIsAutoChangesOpen] = useState(false);
@@ -68,6 +33,7 @@ export function Toolbar() {
     setEditorMode,
     setPendingRoiAction,
     previewMode,
+    revertAutoChange,
     setPreviewMode,
     eraserSize,
     setEraserSize,
@@ -83,7 +49,7 @@ export function Toolbar() {
   } = useEditorStore();
   const { t, locale, setLocale } = useI18n();
   const autoChanges = pageModel?.autoChanges ?? [];
-  const unseenAutoChanges = autoChanges.filter((change) => resolveAutoChangeStatus(change) === 'new');
+  const unseenAutoChanges = autoChanges.filter((change) => change.status === 'new');
 
   useEffect(() => {
     if (!isAutoChangesOpen) {
@@ -181,7 +147,7 @@ export function Toolbar() {
         pageModel: {
           ...state.pageModel,
           autoChanges: state.pageModel.autoChanges?.map((change) => (
-            change.id === changeId && resolveAutoChangeStatus(change) === 'new'
+            change.id === changeId && change.status === 'new'
               ? { ...change, status: 'seen' }
               : change
           )),
@@ -190,21 +156,13 @@ export function Toolbar() {
     });
   };
 
-  const handleRevertAutoChange = (changeId: string) => {
-    useEditorStore.setState((state) => {
-      if (!state.pageModel) {
-        return state;
-      }
-
-      return {
-        pageModel: updatePageModelAutoChanges(state.pageModel, changeId, (change) => ({
-          ...change,
-          applied: false,
-          reverted: true,
-          status: 'reverted',
-        })),
-      };
-    });
+  const handleRevertAutoChange = async (changeId: string) => {
+    try {
+      await revertAutoChange(changeId);
+    } catch (error) {
+      console.error('Failed to revert auto change:', error);
+      alert(`${t('toolbar.revertAutoChange')}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
   };
 
   return (
@@ -334,7 +292,9 @@ export function Toolbar() {
                 <div className="absolute right-0 top-full z-20 mt-2">
                   <AutoChangesPanel
                     autoChanges={autoChanges}
-                    onRevert={handleRevertAutoChange}
+                    onRevert={(changeId) => {
+                      void handleRevertAutoChange(changeId);
+                    }}
                     onMarkSeen={handleMarkSeen}
                   />
                 </div>

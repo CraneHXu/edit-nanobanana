@@ -2,7 +2,7 @@
  * Canvas and editor model types
  */
 
-import { OCRDetection, RGBColor } from './ocr';
+import { BoundingBox, OCRDetection, RGBColor } from './ocr';
 
 export interface EraserPath {
   // Local coordinates relative to the background rect origin in original image space.
@@ -77,6 +77,8 @@ export interface ImagePatch {
   id: string;
   kind: PatchKind;
   regionIds: number[];
+  crop?: BoundingBox;
+  imageDataUrl?: string;
   roiId?: string;
   previewMode?: PreviewMode;
   createdAt: number;
