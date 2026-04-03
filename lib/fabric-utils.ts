@@ -165,15 +165,26 @@ interface ExportCanvasOptions {
   backgroundImageUrl?: string | null;
 }
 
-async function loadBackgroundImage(imageUrl: string, scale: number): Promise<any> {
+function getAlignedBackgroundProps(referenceImage: any, fallbackScale: number) {
+  return {
+    scaleX: typeof referenceImage?.scaleX === 'number' ? referenceImage.scaleX : fallbackScale,
+    scaleY: typeof referenceImage?.scaleY === 'number' ? referenceImage.scaleY : fallbackScale,
+    left: typeof referenceImage?.left === 'number' ? referenceImage.left : 0,
+    top: typeof referenceImage?.top === 'number' ? referenceImage.top : 0,
+    angle: typeof referenceImage?.angle === 'number' ? referenceImage.angle : 0,
+    originX: referenceImage?.originX ?? 'left',
+    originY: referenceImage?.originY ?? 'top',
+    flipX: referenceImage?.flipX ?? false,
+    flipY: referenceImage?.flipY ?? false,
+    skewX: typeof referenceImage?.skewX === 'number' ? referenceImage.skewX : 0,
+    skewY: typeof referenceImage?.skewY === 'number' ? referenceImage.skewY : 0,
+  };
+}
+
+async function loadBackgroundImage(imageUrl: string, scale: number, referenceImage?: any): Promise<any> {
   const fabric = await import('fabric');
   const image = await fabric.FabricImage.fromURL(imageUrl);
-  image.set({
-    scaleX: scale,
-    scaleY: scale,
-    left: 0,
-    top: 0,
-  });
+  image.set(getAlignedBackgroundProps(referenceImage, scale));
   return image;
 }
 
@@ -196,7 +207,7 @@ export async function exportCanvasAsPNG(
 
   try {
     if (backgroundImageUrl) {
-      canvas.backgroundImage = await loadBackgroundImage(backgroundImageUrl, scale);
+      canvas.backgroundImage = await loadBackgroundImage(backgroundImageUrl, scale, originalBackgroundImage);
     }
 
     canvas.renderAll();

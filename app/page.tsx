@@ -9,14 +9,17 @@ import { Toolbar } from '@/components/editor/Toolbar';
 import { Sidebar } from '@/components/editor/Sidebar';
 import { preloadCommonFonts } from '@/lib/font-loader';
 import { generateCleanBackground } from '@/lib/clean-background';
+import { deserializeEditorSession, serializeEditorSession } from '@/lib/session-state';
 
 const SESSION_STORAGE_KEY = 'image-editor-web-session-v2';
+const SESSION_PERSIST_THROTTLE_MS = 300;
 
 export default function Home() {
   const {
     originalImage,
     imageFile,
     pageModel,
+    baseAutoLayer,
     isCleaningBackground,
     sessionHydrated,
     hydrateSession,
@@ -26,6 +29,8 @@ export default function Home() {
     setPreviewMode,
   } = useEditorStore();
   const didBackfillHydratedCleanLayerRef = useRef(false);
+  const persistTimerRef = useRef<number | null>(null);
+  const pendingPersistRef = useRef<ReturnType<typeof serializeEditorSession>>(null);
 
   useEffect(() => {
     preloadCommonFonts();
@@ -40,39 +45,61 @@ export default function Home() {
       return;
     }
 
-    try {
-      const payload = JSON.parse(raw);
-      if (payload?.originalImage && payload?.imageMeta && payload?.pageModel) {
-        hydrateSession(payload);
-      } else {
-        markSessionHydrated();
-      }
-    } catch {
+    const payload = deserializeEditorSession(raw);
+    if (!payload) {
       markSessionHydrated();
+      return;
     }
+
+    hydrateSession({
+      originalImage: payload.originalImage,
+      imageMeta: payload.imageMeta,
+      pageModel: payload.pageModel,
+    });
+    useEditorStore.setState({
+      baseAutoLayer: payload.baseAutoLayer,
+      currentLayer: payload.currentLayer,
+    });
   }, [hydrateSession, markSessionHydrated, sessionHydrated]);
 
   useEffect(() => {
     if (!sessionHydrated || typeof window === 'undefined') return;
+    pendingPersistRef.current = serializeEditorSession(useEditorStore.getState());
 
-    const unsubscribe = useEditorStore.subscribe((state) => {
+    const flushPersist = () => {
       try {
-        if (!state.originalImage || !state.imageMeta || !state.pageModel) {
+        const payload = pendingPersistRef.current;
+        if (!payload) {
           window.localStorage.removeItem(SESSION_STORAGE_KEY);
           return;
         }
 
-        window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({
-          originalImage: state.originalImage,
-          imageMeta: state.imageMeta,
-          pageModel: state.pageModel,
-        }));
+        window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(payload));
       } catch (error) {
         console.error('Failed to persist editor session:', error);
       }
+    };
+
+    const unsubscribe = useEditorStore.subscribe((state) => {
+      pendingPersistRef.current = serializeEditorSession(state);
+      if (persistTimerRef.current !== null) {
+        return;
+      }
+
+      persistTimerRef.current = window.setTimeout(() => {
+        persistTimerRef.current = null;
+        flushPersist();
+      }, SESSION_PERSIST_THROTTLE_MS);
     });
 
-    return unsubscribe;
+    return () => {
+      unsubscribe();
+      if (persistTimerRef.current !== null) {
+        window.clearTimeout(persistTimerRef.current);
+        persistTimerRef.current = null;
+      }
+      flushPersist();
+    };
   }, [sessionHydrated]);
 
   useEffect(() => {
@@ -82,7 +109,7 @@ export default function Home() {
     if (didBackfillHydratedCleanLayerRef.current) {
       return;
     }
-    if (!originalImage || !pageModel || pageModel.cleanLayer || isCleaningBackground) {
+    if (!originalImage || !pageModel || pageModel.cleanLayer || baseAutoLayer || isCleaningBackground) {
       return;
     }
 
@@ -101,6 +128,7 @@ export default function Home() {
         setIsCleaningBackground(false);
       });
   }, [
+    baseAutoLayer,
     imageFile,
     isCleaningBackground,
     originalImage,

@@ -28,6 +28,8 @@ export function Toolbar() {
     restoreAll,
     originalImage,
     pageModel,
+    baseAutoLayer,
+    currentLayer,
     editorMode,
     pendingRoiAction,
     setEditorMode,
@@ -78,7 +80,7 @@ export function Toolbar() {
     try {
       await exportCanvasAsPNG(canvas, canvasScale, {
         filename: `edited-${timestamp}.png`,
-        backgroundImageUrl: pageModel?.cleanLayer || originalImage,
+        backgroundImageUrl: currentLayer ?? baseAutoLayer ?? originalImage,
       });
     } catch (error) {
       alert(`${t('toolbar.exportFailed')}: ${error instanceof Error ? error.message : 'Unknown error'}`);
