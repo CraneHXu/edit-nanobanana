@@ -239,6 +239,96 @@ describe('editor store history actions', () => {
     expect(useEditorStore.getState().currentLayer).toBe('current-1');
   });
 
+  it('manual patch application invalidates existing auto changes', () => {
+    const autoPatch = createPatch({
+      id: 'auto-1',
+      kind: 'auto_ai',
+      createdAt: 10,
+      imageDataUrl: 'patch-1',
+      crop: { x: 1, y: 2, width: 3, height: 4 },
+    });
+    const autoChange = { ...createAutoChange(autoPatch), status: 'new' as const };
+    const pageModel = {
+      ...createPageModel(),
+      patches: [autoPatch],
+      autoChanges: [autoChange],
+    };
+
+    useEditorStore.setState({
+      pageModel,
+      baseAutoLayer: 'auto-base',
+      currentLayer: 'auto-current',
+      historyPast: [],
+      historyFuture: [],
+    });
+
+    useEditorStore.getState().applyPatch(createPatch({ id: 'manual-1', kind: 'manual_ai', createdAt: 20 }), 'manual-layer');
+
+    expect(useEditorStore.getState().pageModel?.autoChanges ?? []).toHaveLength(0);
+    expect((useEditorStore.getState().pageModel?.patches ?? []).map((patch) => patch.id)).toEqual(['manual-1']);
+    expect(useEditorStore.getState().currentLayer).toBe('manual-layer');
+  });
+
+  it('addManualElement invalidates existing auto changes', () => {
+    const autoPatch = createPatch({
+      id: 'auto-1',
+      kind: 'auto_ai',
+      createdAt: 10,
+      imageDataUrl: 'patch-1',
+      crop: { x: 1, y: 2, width: 3, height: 4 },
+    });
+    const autoChange = { ...createAutoChange(autoPatch), status: 'new' as const };
+    const pageModel = {
+      ...createPageModel(),
+      patches: [autoPatch],
+      autoChanges: [autoChange],
+    };
+
+    useEditorStore.setState({
+      pageModel,
+      baseAutoLayer: 'auto-base',
+      currentLayer: 'auto-current',
+      historyPast: [],
+      historyFuture: [],
+      nextRegionId: 9,
+    });
+
+    useEditorStore.getState().addManualElement({ x: 10, y: 12, width: 80, height: 24 });
+
+    expect(useEditorStore.getState().pageModel?.autoChanges ?? []).toHaveLength(0);
+    expect((useEditorStore.getState().pageModel?.patches ?? []).filter((patch) => patch.kind === 'auto_ai')).toHaveLength(0);
+  });
+
+  it('undo after manual patch does not resurrect invalidated auto layers', async () => {
+    const autoPatch = createPatch({
+      id: 'auto-1',
+      kind: 'auto_ai',
+      createdAt: 10,
+      imageDataUrl: 'patch-1',
+      crop: { x: 1, y: 2, width: 3, height: 4 },
+    });
+    const autoChange = { ...createAutoChange(autoPatch), status: 'new' as const };
+    const pageModel = {
+      ...createPageModel(),
+      patches: [autoPatch],
+      autoChanges: [autoChange],
+    };
+
+    useEditorStore.setState({
+      pageModel,
+      baseAutoLayer: 'auto-base',
+      currentLayer: 'auto-current',
+      historyPast: [],
+      historyFuture: [],
+    });
+
+    useEditorStore.getState().applyPatch(createPatch({ id: 'manual-1', kind: 'manual_ai', createdAt: 20 }), 'manual-layer');
+    await useEditorStore.getState().undo();
+
+    expect(useEditorStore.getState().currentLayer).toBe('auto-base');
+    expect(useEditorStore.getState().pageModel?.autoChanges ?? []).toHaveLength(0);
+  });
+
   it('revertAutoChange recomputes current layer from baseAutoLayer and remaining auto patches', async () => {
     const pageModel = createPageModel();
     const firstPatch = createPatch({

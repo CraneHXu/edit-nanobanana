@@ -369,6 +369,25 @@ function createClearedLayerState(): LayerHistoryState {
   };
 }
 
+function captureInvalidatedAutoLayerState(
+  state: Pick<EditorState, 'pageModel' | 'baseAutoLayer'>,
+): LayerHistoryState {
+  const cleanLayer = state.baseAutoLayer ?? state.pageModel?.cleanLayer ?? null;
+  return {
+    cleanLayer,
+    baseAutoLayer: cleanLayer,
+    currentLayer: cleanLayer,
+  };
+}
+
+function invalidateAutoChanges(pageModel: PageModel): PageModel {
+  return {
+    ...pageModel,
+    patches: pageModel.patches?.filter((patch) => patch.kind !== 'auto_ai'),
+    autoChanges: [],
+  };
+}
+
 function applyLayerState(pageModel: PageModel, layerState: LayerHistoryState): PageModel {
   return {
     ...pageModel,
@@ -583,9 +602,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       sourceBounds: cloneBounds(bounds),
       fontSize: Math.max(16, Math.round(bounds.height * 0.65)),
     });
-    const nextPageModel = applyMutations(pageModel, [{ type: 'add-region', element }]);
+    const nextPageModel = applyMutations(invalidateAutoChanges(pageModel), [{ type: 'add-region', element }]);
     const nextRevision = get().autoAiRevision + 1;
-    const previousLayerState = captureLayerState(state);
+    const previousLayerState = captureInvalidatedAutoLayerState(state);
     const nextLayerState = createClearedLayerState();
 
     set({
@@ -650,11 +669,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       ...overlappingRegionIds.map((regionId) => ({ type: 'remove-region', regionId }) as const),
       ...nextRegions.map((element) => ({ type: 'restore-region', regionId: element.id }) as const),
     ];
-    const nextPageModel = applyMutations(pageModel, initialMutations);
+    const nextPageModel = applyMutations(invalidateAutoChanges(pageModel), initialMutations);
     const nextActiveRegions = getActiveRegions(nextPageModel.regions);
     const nextSelectedElementId = nextRegions[0]?.id ?? nextActiveRegions[0]?.id ?? null;
     const nextRevision = get().autoAiRevision + 1;
-    const previousLayerState = captureLayerState(state);
+    const previousLayerState = captureInvalidatedAutoLayerState(state);
     const nextLayerState = createClearedLayerState();
 
     set({
@@ -696,10 +715,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       { type: 'restore-region', regionId: id },
       { type: 'revert-patch', patchId: patch.id },
     ];
-    const nextPageModel = applyMutations(pageModel, redo);
+    const nextPageModel = applyMutations(invalidateAutoChanges(pageModel), redo);
     const nextSelected = getActiveRegions(nextPageModel.regions).find((region) => region.id !== id)?.id ?? null;
     const nextRevision = get().autoAiRevision + 1;
-    const previousLayerState = captureLayerState(state);
+    const previousLayerState = patch.kind === 'auto_ai'
+      ? captureLayerState(state)
+      : captureInvalidatedAutoLayerState(state);
     const nextLayerState = createClearedLayerState();
 
     set({
@@ -743,7 +764,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
     set({
       pageModel: {
-        ...pageModel,
+        ...invalidateAutoChanges(pageModel),
         regions: replaceRegion(pageModel.regions, id, (region) => ({
           ...region,
           ...region.original,
@@ -772,7 +793,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
     set({
       pageModel: {
-        ...pageModel,
+        ...invalidateAutoChanges(pageModel),
         regions: pageModel.regions.map((region) => ({
           ...region,
           ...region.original,
@@ -810,9 +831,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const { pageModel, previewMode } = get();
     if (!pageModel) return;
     const nextRevision = get().autoAiRevision + 1;
+    const nextPageModel = invalidateAutoChanges(pageModel);
 
     set({
-      pageModel: applyLayerState(pageModel, {
+      pageModel: applyLayerState(nextPageModel, {
         cleanLayer,
         baseAutoLayer: cleanLayer,
         currentLayer: cleanLayer,
@@ -829,12 +851,15 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const state = get();
     const { pageModel, historyPast } = state;
     if (!pageModel) return;
+    const basePageModel = patch.kind === 'auto_ai' ? pageModel : invalidateAutoChanges(pageModel);
 
     const redo: PageMutation[] = [{ type: 'apply-patch', patch }];
     const undo: PageMutation[] = [{ type: 'revert-patch', patchId: patch.id }];
-    const nextPageModel = applyMutations(pageModel, redo);
+    const nextPageModel = applyMutations(basePageModel, redo);
     const nextRevision = get().autoAiRevision + 1;
-    const previousLayerState = captureLayerState(state);
+    const previousLayerState = patch.kind === 'auto_ai'
+      ? captureLayerState(state)
+      : captureInvalidatedAutoLayerState(state);
     const nextLayerState = nextLayer == null
       ? previousLayerState
       : {
